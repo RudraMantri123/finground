@@ -1,0 +1,237 @@
+#!/usr/bin/env python3
+"""Evaluate one or more models over the gold set and write results/results.csv.
+
+For each model and each gold question we:
+  1. produce a cited answer (or an abstention) with the RAG pipeline,
+  2. judge the answer (unless it abstained) for correctness, claim support
+     (faithfulness), and citation support,
+  3. record the answer/abstain decision for refusal calibration.
+
+Aggregates per model:
+  model, correctness, citation_accuracy, hallucination_rate,
+  refusal_calibration, avg_latency_s, cost_per_100q, n_questions, n_answered.
+
+Models whose provider is unavailable (no key / unreachable) are written as
+``N/A`` rows — never invented. Per-question detail is dumped to
+results/runs/<model>.jsonl for auditing.
+
+Usage:
+  python scripts/run_benchmark.py                       # default candidate models
+  python scripts/run_benchmark.py --models ollama:llama3 --judge ollama:llama3
+  python scripts/run_benchmark.py --limit 5             # quick smoke run
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import sys
+
+from finground.answer import answer_question
+from finground.config import CONFIG
+from finground.eval.datasets import load_financebench, load_gold_set
+from finground.eval.judge import judge_answer
+from finground.eval.metrics import (
+    citation_accuracy,
+    hallucination_rate,
+    mean_ignoring_none,
+    refusal_calibration,
+)
+from finground.llm import available_providers, parse_model
+
+# Candidate models to compare. Unavailable ones are marked N/A automatically.
+DEFAULT_MODELS = [
+    "openai:gpt-4o",
+    "openai:gpt-4o-mini",
+    "anthropic:claude-sonnet-5",
+    "ollama:llama3",
+]
+
+CSV_COLUMNS = [
+    "model",
+    "correctness",
+    "citation_accuracy",
+    "hallucination_rate",
+    "refusal_calibration",
+    "avg_latency_s",
+    "cost_per_100q",
+    "n_questions",
+    "n_answered",
+]
+
+
+def _fmt(x: float | None, nd: int = 3) -> str:
+    return "N/A" if x is None else f"{x:.{nd}f}"
+
+
+def evaluate_model(model: str, items, judge_model: str) -> dict:
+    """Run the full pipeline + judge for one model over the gold items."""
+    correctness_labels: list[bool] = []
+    citation_scores: list[float | None] = []
+    hallucination_scores: list[float | None] = []
+    decisions: list[tuple[bool, bool]] = []
+    latencies: list[float] = []
+    total_cost = 0.0
+    cost_known = True
+    n_answered = 0
+    detail = []
+
+    for it in items:
+        ans = answer_question(it.question, model=model)
+        did_answer = not ans.abstained
+        decisions.append((it.answerable, did_answer))
+        if ans.latency_s:
+            latencies.append(ans.latency_s)
+        if ans.cost_usd is None:
+            # Unknown price (e.g. local model). Treat as zero but flag.
+            if parse_model(model)[0] != "ollama":
+                cost_known = False
+        else:
+            total_cost += ans.cost_usd
+
+        row = {
+            "id": it.id,
+            "question": it.question,
+            "answerable": it.answerable,
+            "abstained": ans.abstained,
+            "answer": ans.answer,
+            "best_dense_sim": ans.best_dense_sim,
+            "citations": [c["label"] for c in ans.citations],
+        }
+
+        if did_answer:
+            n_answered += 1
+            j = judge_answer(
+                question=it.question,
+                answer=ans.answer,
+                citations=ans.citations,
+                abstained=False,
+                gold_answer=it.gold_answer,
+                model=judge_model,
+            )
+            row["judge"] = j.to_json()
+            if j.error:
+                print(f"    ! {it.id}: {j.error}", file=sys.stderr)
+            # Correctness only counts where we have a gold answer to compare to.
+            if it.gold_answer and j.correct is not None:
+                correctness_labels.append(bool(j.correct))
+            citation_scores.append(citation_accuracy(j.citation_supports))
+            hallucination_scores.append(hallucination_rate(j.claim_supports))
+        detail.append(row)
+
+    # Dump per-question detail (gitignored) for auditing.
+    runs_dir = CONFIG.paths.results / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    safe = model.replace(":", "_").replace("/", "_")
+    with open(runs_dir / f"{safe}.jsonl", "w", encoding="utf-8") as fh:
+        for row in detail:
+            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+    stats = refusal_calibration(decisions)
+    correctness = (
+        (sum(correctness_labels) / len(correctness_labels)) if correctness_labels else None
+    )
+    cost_per_100q = None
+    if cost_known:
+        cost_per_100q = (total_cost / len(items)) * 100 if items else 0.0
+
+    return {
+        "model": model,
+        "correctness": correctness,
+        "citation_accuracy": mean_ignoring_none(citation_scores),
+        "hallucination_rate": mean_ignoring_none(hallucination_scores),
+        "refusal_calibration": stats.calibration,
+        "avg_latency_s": (sum(latencies) / len(latencies)) if latencies else None,
+        "cost_per_100q": cost_per_100q,
+        "n_questions": len(items),
+        "n_answered": n_answered,
+    }
+
+
+def na_row(model: str, n_questions: int) -> dict:
+    return {
+        "model": model,
+        "correctness": None,
+        "citation_accuracy": None,
+        "hallucination_rate": None,
+        "refusal_calibration": None,
+        "avg_latency_s": None,
+        "cost_per_100q": None,
+        "n_questions": n_questions,
+        "n_answered": 0,
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--models", default=None, help="comma-separated provider:model list")
+    parser.add_argument("--judge", default=None, help="judge model (provider:model)")
+    parser.add_argument("--dataset", default="gold", choices=["gold", "financebench"])
+    parser.add_argument("--limit", type=int, default=None, help="cap number of questions")
+    args = parser.parse_args(argv)
+
+    if args.dataset == "financebench":
+        items = load_financebench(limit=args.limit)
+    else:
+        items = load_gold_set()
+        if args.limit:
+            items = items[: args.limit]
+    print(f"Loaded {len(items)} questions from {args.dataset}.")
+
+    models = [m.strip() for m in args.models.split(",")] if args.models else list(DEFAULT_MODELS)
+    providers = available_providers()
+    print(f"Available providers: {sorted(providers) or '(none)'}")
+
+    # Pick a judge that is actually available.
+    judge_model = args.judge or CONFIG.models.judge
+    if parse_model(judge_model)[0] not in providers:
+        fallback = next((m for m in models if parse_model(m)[0] in providers), None)
+        if fallback is None:
+            print("No available judge model. Set a key or run Ollama.", file=sys.stderr)
+            return 1
+        print(f"Judge {judge_model} unavailable; using {fallback} as judge.")
+        judge_model = fallback
+    print(f"Judge model: {judge_model}\n")
+
+    rows = []
+    for model in models:
+        provider = parse_model(model)[0]
+        if provider not in providers:
+            print(f"[N/A] {model}: provider unavailable")
+            rows.append(na_row(model, len(items)))
+            continue
+        print(f"[run] {model} ...")
+        rows.append(evaluate_model(model, items, judge_model))
+        r = rows[-1]
+        print(
+            f"       correctness={_fmt(r['correctness'])} "
+            f"citation_acc={_fmt(r['citation_accuracy'])} "
+            f"halluc={_fmt(r['hallucination_rate'])} "
+            f"refusal_cal={_fmt(r['refusal_calibration'])}"
+        )
+
+    out = CONFIG.paths.results / "results.csv"
+    with open(out, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(CSV_COLUMNS)
+        for r in rows:
+            writer.writerow(
+                [
+                    r["model"],
+                    _fmt(r["correctness"]),
+                    _fmt(r["citation_accuracy"]),
+                    _fmt(r["hallucination_rate"]),
+                    _fmt(r["refusal_calibration"]),
+                    _fmt(r["avg_latency_s"], 2),
+                    _fmt(r["cost_per_100q"], 4),
+                    r["n_questions"],
+                    r["n_answered"],
+                ]
+            )
+    print(f"\nWrote {out}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
