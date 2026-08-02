@@ -1,0 +1,30 @@
+# FinGround runtime + dev dependencies.
+# Canonical source of truth is pyproject.toml. This file is a convenience for
+# `pip install -r requirements.txt`. To install the package itself in editable
+# mode with dev tooling, prefer:  pip install -e ".[dev]"
+
+rank-bm25>=0.2.2
+sentence-transformers>=3.0.0
+faiss-cpu>=1.8.0
+sec-edgar-downloader>=5.0.0
+datasets>=2.19.0
+beautifulsoup4>=4.12.0
+lxml>=5.2.0
+tiktoken>=0.7.0
+openai>=1.30.0
+anthropic>=0.30.0
+fastapi>=0.111.0
+uvicorn>=0.30.0
+pydantic>=2.7.0
+pandas>=2.2.0
+numpy>=1.26.0
+scikit-learn>=1.5.0
+matplotlib>=3.9.0
+python-dotenv>=1.0.0
+requests>=2.32.0
+
+# dev
+pytest>=8.2.0
+ruff>=0.5.0
+black>=24.4.0
+mypy>=1.10.0

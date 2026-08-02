@@ -1,0 +1,80 @@
+[project]
+name = "finground"
+version = "0.1.0"
+description = "Faithfulness-first Financial RAG system + evaluation benchmark over SEC filings."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Rudra Mantri" }]
+keywords = ["rag", "finance", "sec-edgar", "faithfulness", "hallucination", "evaluation", "llm"]
+
+dependencies = [
+    # Retrieval
+    "rank-bm25>=0.2.2",
+    "sentence-transformers>=3.0.0",
+    "faiss-cpu>=1.8.0",
+    # Data
+    "sec-edgar-downloader>=5.0.0",
+    "datasets>=2.19.0",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=5.2.0",
+    "tiktoken>=0.7.0",
+    # LLM providers (imported lazily; wrapper degrades gracefully if absent)
+    "openai>=1.30.0",
+    "anthropic>=0.30.0",
+    # Serving
+    "fastapi>=0.111.0",
+    "uvicorn>=0.30.0",
+    "pydantic>=2.7.0",
+    # Eval / analysis
+    "pandas>=2.2.0",
+    "numpy>=1.26.0",
+    "scikit-learn>=1.5.0",
+    "matplotlib>=3.9.0",
+    # Config
+    "python-dotenv>=1.0.0",
+    "requests>=2.32.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2.0",
+    "ruff>=0.5.0",
+    "black>=24.4.0",
+    "mypy>=1.10.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/RudraMantri123/finground"
+Repository = "https://github.com/RudraMantri123/finground"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "scripts", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "W"]
+ignore = ["E501"]  # line length handled by black
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_configs = true
+ignore_missing_imports = true
+disallow_untyped_defs = false
+files = ["src", "scripts"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

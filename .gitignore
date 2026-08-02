@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Secrets / config
+.env
+.env.local
+
+# Data & build artifacts (regenerated from scripts)
+data/
+indexes/
+.cache/
+llm_cache/
+
+# Results: commit derived artifacts (results.csv, charts, human labels)
+# but ignore any bulky per-run dumps.
+results/runs/
+results/*.jsonl
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
