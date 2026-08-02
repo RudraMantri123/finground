@@ -75,10 +75,19 @@ def evaluate_model(model: str, items, judge_model: str) -> dict:
     total_cost = 0.0
     cost_known = True
     n_answered = 0
+    n_errors = 0
     detail = []
 
     for it in items:
-        ans = answer_question(it.question, model=model)
+        # A single flaky/slow local inference must not abort the whole benchmark.
+        try:
+            ans = answer_question(it.question, model=model)
+        except Exception as exc:  # noqa: BLE001 — record and skip the item
+            n_errors += 1
+            print(f"    x {it.id}: answer failed: {exc}", file=sys.stderr)
+            detail.append({"id": it.id, "question": it.question, "error": str(exc)})
+            continue
+
         did_answer = not ans.abstained
         decisions.append((it.answerable, did_answer))
         if ans.latency_s:
@@ -102,14 +111,21 @@ def evaluate_model(model: str, items, judge_model: str) -> dict:
 
         if did_answer:
             n_answered += 1
-            j = judge_answer(
-                question=it.question,
-                answer=ans.answer,
-                citations=ans.citations,
-                abstained=False,
-                gold_answer=it.gold_answer,
-                model=judge_model,
-            )
+            try:
+                j = judge_answer(
+                    question=it.question,
+                    answer=ans.answer,
+                    citations=ans.citations,
+                    abstained=False,
+                    gold_answer=it.gold_answer,
+                    model=judge_model,
+                )
+            except Exception as exc:  # noqa: BLE001 — skip metrics for this item
+                n_errors += 1
+                print(f"    x {it.id}: judge failed: {exc}", file=sys.stderr)
+                row["judge_error"] = str(exc)
+                detail.append(row)
+                continue
             row["judge"] = j.to_json()
             if j.error:
                 print(f"    ! {it.id}: {j.error}", file=sys.stderr)
@@ -119,6 +135,9 @@ def evaluate_model(model: str, items, judge_model: str) -> dict:
             citation_scores.append(citation_accuracy(j.citation_supports))
             hallucination_scores.append(hallucination_rate(j.claim_supports))
         detail.append(row)
+
+    if n_errors:
+        print(f"    ({n_errors} item(s) skipped due to errors for {model})")
 
     # Dump per-question detail (gitignored) for auditing.
     runs_dir = CONFIG.paths.results / "runs"

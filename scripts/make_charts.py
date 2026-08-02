@@ -76,8 +76,9 @@ def quality_chart(rows: list[dict]) -> None:
 
 
 def hallucination_chart(rows: list[dict]) -> None:
-    plotted = [(r["model"], _f(r["hallucination_rate"])) for r in rows]
-    plotted = [(m, v) for m, v in plotted if v is not None]
+    plotted: list[tuple[str, float]] = [
+        (r["model"], v) for r in rows if (v := _f(r["hallucination_rate"])) is not None
+    ]
     if not plotted:
         print("No hallucination data to plot. Skipping.")
         return

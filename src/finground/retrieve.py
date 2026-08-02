@@ -11,6 +11,7 @@ import json
 import pickle
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import faiss
 import numpy as np
@@ -44,7 +45,7 @@ class RetrievedChunk:
 
 @dataclass
 class _Indexes:
-    bm25: object
+    bm25: Any  # rank_bm25.BM25Okapi (untyped third-party)
     bm25_chunks: list[dict]
     faiss_index: faiss.Index
     dense_chunks: list[dict]

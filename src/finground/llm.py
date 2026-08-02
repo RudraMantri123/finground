@@ -219,7 +219,7 @@ class LLMClient:
                         {"role": "user", "content": user},
                     ],
                 },
-                timeout=300,
+                timeout=900,  # local CPU inference of long answers can be slow
             )
             resp.raise_for_status()
         except requests.RequestException as exc:
