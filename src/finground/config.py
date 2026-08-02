@@ -70,9 +70,12 @@ class Retrieval:
     chunk_tokens: int = 500
     chunk_overlap_tokens: int = 75
     top_k: int = 8
+    candidate_pool: int = 50  # per-ranker depth fused by RRF
     rrf_k: int = 60  # RRF smoothing constant
-    # Score below which the answerer is told evidence is weak (drives refusal).
-    min_evidence_score: float = 0.015
+    # Best dense cosine similarity below which retrieved evidence is considered
+    # too weak to answer from — the answerer hard-gates to a refusal. BGE
+    # relevant passages typically score ~0.5-0.75; noise sits well below this.
+    min_dense_sim: float = 0.40
 
 
 @dataclass(frozen=True)
