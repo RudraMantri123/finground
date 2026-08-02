@@ -1,0 +1,107 @@
+{
+  "model": "ollama:llama3",
+  "n_examples": 13,
+  "correctness": {
+    "n": 13,
+    "raw_agreement": 0.7692307692307693,
+    "cohen_kappa": 0.49350649350649356
+  },
+  "faithfulness": {
+    "n": 13,
+    "raw_agreement": 0.9230769230769231,
+    "cohen_kappa": 0.8433734939759037
+  },
+  "rows": [
+    {
+      "id": "hl-01",
+      "human_correct": true,
+      "judge_correct": true,
+      "human_faithful": true,
+      "judge_faithful": true
+    },
+    {
+      "id": "hl-02",
+      "human_correct": false,
+      "judge_correct": false,
+      "human_faithful": false,
+      "judge_faithful": false
+    },
+    {
+      "id": "hl-03",
+      "human_correct": false,
+      "judge_correct": true,
+      "human_faithful": false,
+      "judge_faithful": false
+    },
+    {
+      "id": "hl-04",
+      "human_correct": true,
+      "judge_correct": true,
+      "human_faithful": true,
+      "judge_faithful": true
+    },
+    {
+      "id": "hl-05",
+      "human_correct": false,
+      "judge_correct": false,
+      "human_faithful": false,
+      "judge_faithful": false
+    },
+    {
+      "id": "hl-06",
+      "human_correct": true,
+      "judge_correct": true,
+      "human_faithful": true,
+      "judge_faithful": true
+    },
+    {
+      "id": "hl-07",
+      "human_correct": true,
+      "judge_correct": true,
+      "human_faithful": true,
+      "judge_faithful": true
+    },
+    {
+      "id": "hl-08",
+      "human_correct": true,
+      "judge_correct": false,
+      "human_faithful": false,
+      "judge_faithful": false
+    },
+    {
+      "id": "hl-09",
+      "human_correct": true,
+      "judge_correct": true,
+      "human_faithful": true,
+      "judge_faithful": true
+    },
+    {
+      "id": "hl-10",
+      "human_correct": false,
+      "judge_correct": true,
+      "human_faithful": false,
+      "judge_faithful": true
+    },
+    {
+      "id": "hl-11",
+      "human_correct": true,
+      "judge_correct": true,
+      "human_faithful": true,
+      "judge_faithful": true
+    },
+    {
+      "id": "hl-12",
+      "human_correct": true,
+      "judge_correct": true,
+      "human_faithful": true,
+      "judge_faithful": true
+    },
+    {
+      "id": "hl-13",
+      "human_correct": false,
+      "judge_correct": false,
+      "human_faithful": false,
+      "judge_faithful": false
+    }
+  ]
+}
