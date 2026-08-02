@@ -49,13 +49,17 @@ class Paths:
 class Models:
     """Model identifiers. Answer/judge use ``provider:model`` form (see llm.py)."""
 
-    embed: str = field(default_factory=lambda: _env("FINGROUND_EMBED_MODEL", "BAAI/bge-base-en-v1.5"))
+    embed: str = field(
+        default_factory=lambda: _env("FINGROUND_EMBED_MODEL", "BAAI/bge-base-en-v1.5")
+    )
     reranker: str = field(
         default_factory=lambda: _env(
             "FINGROUND_RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2"
         )
     )
-    answer: str = field(default_factory=lambda: _env("FINGROUND_ANSWER_MODEL", "openai:gpt-4o-mini"))
+    answer: str = field(
+        default_factory=lambda: _env("FINGROUND_ANSWER_MODEL", "openai:gpt-4o-mini")
+    )
     judge: str = field(default_factory=lambda: _env("FINGROUND_JUDGE_MODEL", "openai:gpt-4o"))
 
 
