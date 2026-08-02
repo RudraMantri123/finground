@@ -1,0 +1,5 @@
+model,correctness,citation_accuracy,hallucination_rate,refusal_calibration,avg_latency_s,cost_per_100q,n_questions,n_answered
+openai:gpt-4o,N/A,N/A,N/A,N/A,N/A,N/A,20,0
+openai:gpt-4o-mini,N/A,N/A,N/A,N/A,N/A,N/A,20,0
+anthropic:claude-sonnet-5,N/A,N/A,N/A,N/A,N/A,N/A,20,0
+ollama:llama3,0.067,0.179,0.833,0.600,60.42,0.0000,20,19
