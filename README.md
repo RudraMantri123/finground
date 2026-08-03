@@ -12,6 +12,15 @@ specific 10-K sections, the system refuses when evidence is weak, and the
 evaluation harness scores four dimensions including an explicit, human-validated
 **faithfulness / hallucination** metric.
 
+**What the benchmark has already caught** (details in [Results](#results)):
+
+- A **silent context-truncation bug** that cost 8× correctness and 90× hallucination
+  with identical model weights — configuration, not parameters.
+- Three free **"finance-specialized" models losing to their general base model** on
+  every grounding metric; one of them never refuses an unanswerable question.
+- A judge whose **faithfulness verdicts agree with humans at κ = 0.84** — and whose
+  correctness verdicts (κ = 0.49) are honestly flagged as the weak link.
+
 ---
 
 ## Motivation
@@ -45,7 +54,8 @@ flowchart LR
         Q[Question] --> R[Hybrid retrieve<br/>RRF fusion]
         D --> R
         E --> R
-        R --> G{Evidence<br/>strong enough?}
+        R --> F[Company filter<br/>+ cross-encoder rerank]
+        F --> G{Evidence<br/>strong enough?}
         G -- no --> X[Abstain:<br/>Not answerable]
         G -- yes --> L[LLM answerer<br/>cite-only prompt]
         L --> Y[Cited answer<br/>+ provenance]
@@ -59,7 +69,11 @@ flowchart LR
     end
 ```
 
-**Pipeline:** ingest → hybrid retrieve → cite-or-refuse → evaluate. The evidence
+**Pipeline:** ingest → hybrid retrieve → filter/rerank → cite-or-refuse → evaluate.
+When the query names a corpus company, retrieval prefers that filer's chunks (an
+Apple question is never answered with — or cited to — another company's filing);
+a cross-encoder (`ms-marco-MiniLM`) then reranks the fused pool for precision,
+degrading gracefully to RRF order when the model can't be downloaded. The evidence
 gate (dense cosine below threshold ⇒ abstain) short-circuits weak questions before
 spending a token, and the answerer is separately instructed to abstain when the
 excerpts don't support an answer.
@@ -188,6 +202,7 @@ python scripts/make_human_labels.py     # (already committed)
 make benchmark                          # -> results/results.csv
 make charts                             # -> results/charts/*.png
 make validate-judge                     # judge vs human labels (Cohen's kappa)
+python scripts/update_readme.py         # wire this README's tables from results/
 
 make test                       # unit tests (chunking, retrieval, metrics, answering)
 make lint                       # ruff + black + mypy
@@ -195,8 +210,13 @@ make lint                       # ruff + black + mypy
 
 Set `SEC_EDGAR_USER_AGENT` in `.env` to a descriptive string with contact info —
 EDGAR requires it. Local models: point `OLLAMA_BASE_URL` at a running Ollama and use
-`--models ollama:<name> --judge ollama:<name>`. LLM responses are cached on disk
-(`llm_cache/`) so re-runs don't re-bill.
+`--models ollama:<name> --judge ollama:<name>`. `OLLAMA_NUM_CTX` (default 8192) sets
+the context window explicitly — never rely on Ollama's small default, which silently
+truncates RAG prompts. Retrieval knobs (`company_filter`, `use_reranker`, `top_k`)
+live in `src/finground/config.py`; the reranker downloads from Hugging Face on first
+use and falls back to RRF order offline. LLM responses are cached on disk
+(`llm_cache/`) so re-runs don't re-bill; generation options are part of the cache
+key, so changing them re-generates instead of serving stale outputs.
 
 ---
 
@@ -209,8 +229,14 @@ EDGAR requires it. Local models: point `OLLAMA_BASE_URL` at a running Ollama and
   validation needs multiple independent annotators and inter-annotator agreement.
 - **Judge bias & self-judging.** An LLM judge shares blind spots with the models it
   scores; using the *same* local model as answerer and judge (as in the committed
-  run) is the weakest configuration and is disclosed as such. Prefer a stronger,
-  different judge.
+  llama3 row) is the weakest configuration and is disclosed as such. When comparing
+  models, a fixed llama3 judge may also favor outputs from its own model family
+  (two of the finance models are Llama-3 derivatives, partially leveling this).
+  Prefer a stronger, unrelated judge.
+- **Model context windows.** The pipeline sends ~4-5K-token prompts; models with
+  smaller windows (e.g. Llama-2's 4K) silently truncate and their scores reflect
+  that limit, not just their weights. `OLLAMA_NUM_CTX` must exceed the prompt size
+  or the same failure occurs by configuration.
 - **Data contamination.** LLMs have very likely seen these public 10-Ks in
   pretraining, which can inflate correctness independent of retrieval. Faithfulness
   (claims-vs-cited-evidence) is more robust to this than correctness.
@@ -225,9 +251,9 @@ EDGAR requires it. Local models: point `OLLAMA_BASE_URL` at a running Ollama and
 
 ## How I'd scale this
 
-- **Retrieval:** shard the FAISS index (IVF/HNSW) per company/year; add a
-  cross-encoder reranker (`ms-marco-MiniLM`) on the fused candidate pool and distill
-  it to keep latency low. Cache query embeddings.
+- **Retrieval:** shard the FAISS index (IVF/HNSW) per company/year; distill the
+  existing cross-encoder reranker into the bi-encoder to keep its precision without
+  its latency. Cache query embeddings.
 - **Answering:** stream tokens; batch retrieval; move the evidence gate to a small
   calibrated classifier over retrieval features rather than a single cosine
   threshold.
@@ -245,10 +271,10 @@ EDGAR requires it. Local models: point `OLLAMA_BASE_URL` at a running Ollama and
 
 ```
 src/finground/       ingest · index · retrieve · answer · llm · serve · eval/
-scripts/             run_ingest · run_index · run_benchmark · make_charts · make_gold_set · make_human_labels
+scripts/             run_ingest · run_index · run_benchmark · make_charts · make_gold_set · make_human_labels · update_readme
 results/             results.csv · charts/ · judge_validation.json · gold_set.jsonl · human_labels/
 demo/                static grounded-QA page hitting /query
-tests/               chunking · retrieval provenance · metric math · answering
+tests/               chunking · retrieval provenance · metric math · answering (33 tests)
 ```
 
 ## License
