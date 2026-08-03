@@ -78,7 +78,10 @@ Models whose API key was not present at run time are marked **N/A** — never in
 | openai:gpt-4o | N/A | N/A | N/A | N/A | N/A | N/A | 20 | 0 |
 | openai:gpt-4o-mini | N/A | N/A | N/A | N/A | N/A | N/A | 20 | 0 |
 | anthropic:claude-sonnet-5 | N/A | N/A | N/A | N/A | N/A | N/A | 20 | 0 |
-| ollama:llama3 | 0.538 | 0.885 | 0.009 | 1.000 | 52.19 | 0.0000 | 20 | 15 |
+| ollama:llama3 | 0.467 | 0.900 | 0.007 | 1.000 | 51.59 | 0.0000 | 20 | 15 |
+| ollama:martain7r/finance-llama-8b:q4_k_m | 0.214 | 0.415 | 0.512 | 0.567 | 149.71 | 0.0000 | 20 | 18 |
+| ollama:0xroyce/plutus:latest | 0.500 | 0.803 | 0.207 | 0.500 | 61.25 | 0.0000 | 20 | 20 |
+| ollama:jjansen/adapt-finance-llama2-7b:latest | 0.267 | 0.708 | 0.420 | 0.600 | 14.35 | 0.0000 | 20 | 19 |
 <!-- RESULTS_TABLE_END -->
 
 **Charts** (`results/charts/`, regenerate with `make charts`):
@@ -98,23 +101,33 @@ Judge model: `ollama:llama3` · n = 13 examples
 | Faithfulness | 92.3% | 0.843 |
 <!-- JUDGE_VALIDATION_END -->
 
-> **Run context.** The committed numbers were produced on a machine with only a
-> local `ollama:llama3` available (no hosted API keys), so it serves as both the
-> answerer and the judge. A stronger hosted judge (GPT-4o / Claude) would raise
-> correctness agreement; faithfulness agreement is already strong. Re-run with your
-> own keys to populate the hosted-model rows.
+> **Run context.** The committed numbers were produced on a machine with no hosted
+> API keys, so every scored model runs locally via Ollama, and `ollama:llama3`
+> serves as the fixed judge for all rows (comparable scores; disclosed weakness: an
+> 8B judge is noisy on correctness and may favor its own model family). Re-run with
+> your own keys to populate the hosted-model rows. Small-n numbers throughout;
+> treat as directional.
 >
-> **Caveats on this run:** 3 of 20 items hit transient Ollama 500s and were
-> skipped (the runner records and continues), so refusal calibration was computed
-> over 19 decisions and claim/citation metrics over the 13 answered-and-judged
-> items. Small-n numbers; treat as directional.
+> **Finding: "finance-tuned" ≠ better grounded financial QA.** Three free models
+> claiming finance specialization were benchmarked against the general llama3-8B
+> baseline on the identical pipeline. The baseline won on every grounding metric —
+> near-zero hallucination (0.007), top citation accuracy (0.900), and perfect
+> refusal calibration. `plutus` edged correctness (0.500 vs 0.467) but answered
+> **all five unanswerable questions** (refusal calibration 0.500 — it never
+> refuses) with ~30× the baseline's hallucination rate. `finance-llama-8b`
+> (tuned on 500k finance examples) scored worst across the board — domain
+> fine-tuning appears to have eroded the instruction-following (inline citation,
+> abstention) that grounded RAG depends on. `adapt-finance-llama2-7b` carries a
+> hard 4K context window against our ~4-5K-token prompts, so its inputs truncate;
+> its scores mostly measure that limit. Marketing claims are not grounding
+> guarantees — measure.
 >
 > **A measured lesson in silent truncation.** An earlier committed run scored
-> correctness 0.067 / hallucination 0.833 with this same model. The cause was not
-> the model: Ollama's default ~2k `num_ctx` silently truncated the front of the
+> correctness 0.067 / hallucination 0.833 for llama3. The cause was not the
+> model: Ollama's default ~2k `num_ctx` silently truncated the front of the
 > RAG prompt, cutting off the system rules and the question itself. Fixing
 > `num_ctx` (plus excerpts-first prompt order, semantic refusal detection, and
-> company-aware retrieval) moved correctness to 0.538 and hallucination to 0.009
+> company-aware retrieval) moved correctness to ~0.5 and hallucination to ~0.01
 > — an 8× / 90× swing from configuration, not parameters. The eval harness is
 > what made the bug visible.
 

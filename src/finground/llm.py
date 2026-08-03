@@ -16,6 +16,7 @@ import json
 import os
 import time
 from dataclasses import dataclass
+from typing import Any
 
 import requests
 
@@ -226,28 +227,39 @@ class LLMClient:
 
     def _ollama(self, system: str, user: str, max_tokens: int) -> tuple[str, int, int]:
         url = f"{CONFIG.ollama_base_url}/api/chat"
-        try:
-            resp = requests.post(
-                url,
-                json={
-                    "model": self.model,
-                    "stream": False,
-                    "options": {
-                        "temperature": self.temperature,
-                        "num_predict": max_tokens,
-                        # Explicit context window — see ollama_num_ctx().
-                        "num_ctx": ollama_num_ctx(),
-                    },
-                    "messages": [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user},
-                    ],
-                },
-                timeout=900,  # local CPU inference of long answers can be slow
-            )
-            resp.raise_for_status()
-        except requests.RequestException as exc:
-            raise LLMUnavailable(f"Ollama unreachable at {url}: {exc}") from exc
-        data = resp.json()
-        text = data.get("message", {}).get("content", "")
-        return text, data.get("prompt_eval_count", 0), data.get("eval_count", 0)
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "stream": False,
+            "options": {
+                "temperature": self.temperature,
+                "num_predict": max_tokens,
+                # Explicit context window — see ollama_num_ctx().
+                "num_ctx": ollama_num_ctx(),
+            },
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        }
+        # The local daemon can crash and auto-restart under memory pressure
+        # (observed when two ~5GB models swap as answerer/judge). Retry with
+        # backoff so a restart delays the benchmark instead of failing items.
+        attempts = 4
+        last_exc: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                resp = requests.post(url, json=payload, timeout=900)
+                resp.raise_for_status()
+                data = resp.json()
+                text = data.get("message", {}).get("content", "")
+                return text, data.get("prompt_eval_count", 0), data.get("eval_count", 0)
+            except requests.RequestException as exc:
+                last_exc = exc
+                if attempt < attempts:
+                    wait = 15 * attempt  # 15s, 30s, 45s — time for a daemon relaunch
+                    print(
+                        f"[llm] ollama request failed (attempt {attempt}/{attempts}): "
+                        f"{exc.__class__.__name__}; retrying in {wait}s"
+                    )
+                    time.sleep(wait)
+        raise LLMUnavailable(f"Ollama unreachable at {url}: {last_exc}") from last_exc
