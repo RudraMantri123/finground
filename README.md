@@ -78,7 +78,7 @@ Models whose API key was not present at run time are marked **N/A** — never in
 | openai:gpt-4o | N/A | N/A | N/A | N/A | N/A | N/A | 20 | 0 |
 | openai:gpt-4o-mini | N/A | N/A | N/A | N/A | N/A | N/A | 20 | 0 |
 | anthropic:claude-sonnet-5 | N/A | N/A | N/A | N/A | N/A | N/A | 20 | 0 |
-| ollama:llama3 | 0.067 | 0.179 | 0.833 | 0.600 | 60.42 | 0.0000 | 20 | 19 |
+| ollama:llama3 | 0.538 | 0.885 | 0.009 | 1.000 | 52.19 | 0.0000 | 20 | 15 |
 <!-- RESULTS_TABLE_END -->
 
 **Charts** (`results/charts/`, regenerate with `make charts`):
@@ -103,6 +103,20 @@ Judge model: `ollama:llama3` · n = 13 examples
 > answerer and the judge. A stronger hosted judge (GPT-4o / Claude) would raise
 > correctness agreement; faithfulness agreement is already strong. Re-run with your
 > own keys to populate the hosted-model rows.
+>
+> **Caveats on this run:** 3 of 20 items hit transient Ollama 500s and were
+> skipped (the runner records and continues), so refusal calibration was computed
+> over 19 decisions and claim/citation metrics over the 13 answered-and-judged
+> items. Small-n numbers; treat as directional.
+>
+> **A measured lesson in silent truncation.** An earlier committed run scored
+> correctness 0.067 / hallucination 0.833 with this same model. The cause was not
+> the model: Ollama's default ~2k `num_ctx` silently truncated the front of the
+> RAG prompt, cutting off the system rules and the question itself. Fixing
+> `num_ctx` (plus excerpts-first prompt order, semantic refusal detection, and
+> company-aware retrieval) moved correctness to 0.538 and hallucination to 0.009
+> — an 8× / 90× swing from configuration, not parameters. The eval harness is
+> what made the bug visible.
 
 ---
 
