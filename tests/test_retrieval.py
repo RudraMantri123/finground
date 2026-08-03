@@ -80,6 +80,9 @@ def tiny_index(monkeypatch):
         "embed_queries",
         lambda texts, model_name=None: np.array([[0.95, 0.1, 0.0, 0.0]], dtype="float32"),
     )
+    # Stub the cross-encoder: keep incoming order (score by inverse position)
+    # so these tests exercise plumbing, not the real model.
+    monkeypatch.setattr(R, "rerank", lambda q, cands: [(c, float(-i)) for i, c in enumerate(cands)])
     return idx
 
 
@@ -124,3 +127,37 @@ def test_retrieve_scores_present(tiny_index):
 def test_retrieve_respects_top_k(tiny_index):
     assert len(retrieve("anything", top_k=1)) == 1
     assert len(retrieve("anything", top_k=2)) == 2
+
+
+# -- company-aware filtering --------------------------------------------------
+
+
+def test_detect_tickers_from_names_and_aliases():
+    from finground.retrieve import detect_tickers
+
+    assert detect_tickers("What risks does Apple disclose?", CHUNKS) == {"AAPL"}
+    assert detect_tickers("nvidia data center revenue", CHUNKS) == {"NVDA"}
+    # Leading "The" is stripped from company names ("The Coca-Cola Company").
+    assert detect_tickers("How does Coca-Cola describe bottling?", CHUNKS) == {"KO"}
+    # No corpus company named -> no filter.
+    assert detect_tickers("What is the capital of France?", CHUNKS) == set()
+
+
+def test_company_filter_excludes_other_tickers(tiny_index, monkeypatch):
+    # Force dense to favor the NVDA vector even though the query names Apple:
+    # without the filter NVDA would rank high; with it AAPL must come first.
+    monkeypatch.setattr(
+        R,
+        "embed_queries",
+        lambda texts, model_name=None: np.array([[0.1, 0.95, 0.0, 0.0]], dtype="float32"),
+    )
+    results = retrieve("apple risks", top_k=1)
+    assert results[0].ticker == "AAPL"
+
+
+def test_company_filter_fills_back_when_scarce(tiny_index):
+    # Only one AAPL chunk exists; asking for 3 must fill with other tickers
+    # rather than returning fewer results.
+    results = retrieve("apple supply chain", top_k=3)
+    assert len(results) == 3
+    assert results[0].ticker == "AAPL"

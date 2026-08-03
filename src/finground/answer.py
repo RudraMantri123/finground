@@ -34,6 +34,28 @@ SYSTEM_PROMPT = (
 _CITATION_RE = re.compile(r"\[([^\]]*?C\d+[^\]]*?)\]")
 _LABEL_RE = re.compile(r"C(\d+)")
 
+# Semantic-abstention markers. Models (especially small local ones) often
+# refuse in their own words instead of echoing the exact REFUSAL sentence;
+# an answer *opening* with one of these is an abstention in substance and must
+# be scored as one. Checked only against the start of the answer so that
+# ordinary answers which merely *mention* missing info later are not caught.
+_REFUSAL_PATTERNS = (
+    "not answerable from the provided filings",
+    "not applicable",
+    "cannot be answered",
+    "cannot answer",
+    "can't answer",
+    "unable to answer",
+    "do not contain enough information",
+    "does not contain enough information",
+    "do not contain information",
+    "does not contain information",
+    "not possible to answer",
+    "no information in the provided excerpts",
+    "the provided excerpts do not",
+    "the excerpts do not",
+)
+
 
 @dataclass
 class Answer:
@@ -75,8 +97,9 @@ def extract_cited_labels(answer_text: str) -> list[str]:
 
 
 def is_refusal(answer_text: str) -> bool:
-    normalized = answer_text.strip().lower().rstrip(".")
-    return normalized.startswith("not answerable from the provided filings")
+    """True if the answer is an abstention — canonical or in the model's own words."""
+    head = answer_text.strip().lower()[:160]
+    return any(p in head for p in _REFUSAL_PATTERNS)
 
 
 def answer_question(
@@ -120,12 +143,31 @@ def answer_question(
             meta={"gate": "evidence_below_threshold", "threshold": CONFIG.retrieval.min_dense_sim},
         )
 
-    user_prompt = f"Question: {question}\n\nExcerpts:\n{_format_excerpts(retrieved)}"
+    # Excerpts first, question and rules last: models (small ones especially)
+    # attend most to the end of the prompt, and a long excerpt block placed
+    # after the question tends to bury it.
+    user_prompt = (
+        f"Excerpts from SEC filings:\n\n{_format_excerpts(retrieved)}\n\n"
+        f"---\n"
+        f"Question: {question}\n\n"
+        f"Answer the question using ONLY the excerpts above. Cite the excerpt(s) "
+        f"supporting each claim inline with their bracket labels, e.g. [C1] or "
+        f"[C2, C3]. If the excerpts do not contain the answer, reply exactly: "
+        f"{REFUSAL}"
+    )
     client = LLMClient(model, temperature=temperature, use_cache=use_cache)
     resp: LLMResponse = client.complete(SYSTEM_PROMPT, user_prompt)
 
-    abstained = is_refusal(resp.text)
-    cited_labels = [] if abstained else extract_cited_labels(resp.text)
+    # Small models sometimes append the refusal template after a complete,
+    # cited answer (echoing the prompt's last instruction). Strip that dangling
+    # boilerplate first — it is not a claim; a pure refusal strips to empty.
+    answer_text = re.sub(
+        rf"\s*{re.escape(REFUSAL.rstrip('.'))}\.?\s*$", "", resp.text.strip()
+    ).strip()
+    abstained = not answer_text or is_refusal(answer_text)
+    if abstained:
+        answer_text = REFUSAL
+    cited_labels = [] if abstained else extract_cited_labels(answer_text)
     by_label = {r.label: r for r in retrieved}
     citations = [
         {
@@ -140,7 +182,7 @@ def answer_question(
 
     return Answer(
         question=question,
-        answer=resp.text.strip(),
+        answer=answer_text,
         abstained=abstained,
         citations=citations,
         retrieved=retrieved_json,

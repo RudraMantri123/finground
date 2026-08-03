@@ -48,6 +48,25 @@ def test_is_refusal():
     assert not is_refusal("Apple faces supply chain risk [C1].")
 
 
+def test_is_refusal_semantic_variants():
+    # Models often abstain in their own words; these open with abstention
+    # markers and must be scored as refusals.
+    assert is_refusal(
+        "Not applicable. The provided excerpts do not contain information about that."
+    )
+    assert is_refusal("The excerpts do not contain enough information to answer this question.")
+    assert is_refusal("I cannot answer this from the provided excerpts.")
+    assert is_refusal("It is not possible to answer this question based on the excerpts.")
+    # Ordinary answers mentioning missing info *later* are NOT refusals: only
+    # the opening of the answer is checked.
+    long_answer = (
+        "Apple discloses supply chain concentration risks [C1] and manufacturing "
+        "dependence on partners in Asia [C2]. Additional detail on pricing terms is "
+        "something the excerpts do not contain."
+    )
+    assert not is_refusal(long_answer)
+
+
 # -- evidence gate (no LLM call) -------------------------------------------
 
 
@@ -108,6 +127,28 @@ def test_cited_answer_maps_citations(monkeypatch):
     assert "Risk Factors" in by_label["C1"]["provenance"]
     assert ans.prompt_tokens == 500
     assert ans.completion_tokens == 40
+
+
+def test_trailing_refusal_boilerplate_is_stripped(monkeypatch):
+    strong = [_rc("C1", "AAPL-1", "AAPL", "Item 1A. Risk Factors", "supplier risk", 0.70)]
+    monkeypatch.setattr(A, "retrieve", lambda q, top_k=None: strong)
+
+    class _TrailingClient(_StubClient):
+        def complete(self, system, user, **kwargs):
+            # A real answer followed by the echoed refusal template.
+            return LLMResponse(
+                f"Apple cites supplier concentration [C1].\n\n{A.REFUSAL}",
+                self.model_spec,
+                300,
+                30,
+                0.5,
+            )
+
+    monkeypatch.setattr(A, "LLMClient", _TrailingClient)
+    ans = answer_question("What supply chain risks does Apple cite?", model="openai:gpt-4o-mini")
+    assert not ans.abstained
+    assert ans.answer == "Apple cites supplier concentration [C1]."
+    assert [c["label"] for c in ans.citations] == ["C1"]
 
 
 def test_model_refusal_is_detected(monkeypatch):

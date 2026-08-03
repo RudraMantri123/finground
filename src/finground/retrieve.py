@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import pickle
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -88,6 +89,85 @@ def _rrf_ranks(ordered_ids: list[str], rrf_k: int) -> dict[str, float]:
     return {cid: 1.0 / (rrf_k + rank) for rank, cid in enumerate(ordered_ids, start=1)}
 
 
+# ---------------------------------------------------------------------------
+# Company detection (query -> tickers present in the corpus)
+# ---------------------------------------------------------------------------
+
+# Extra aliases that the first-word-of-company-name heuristic can't derive.
+_COMPANY_ALIASES = {"google": "GOOGL", "aws": "AMZN", "coke": "KO"}
+
+
+def _company_terms(chunks: list[dict]) -> dict[str, str]:
+    """Build {lowercase term -> ticker} from the indexed chunks themselves."""
+    terms: dict[str, str] = dict(_COMPANY_ALIASES)
+    for c in chunks:
+        ticker = c.get("ticker", "")
+        name = c.get("company", "")
+        if not ticker:
+            continue
+        terms[ticker.lower()] = ticker
+        # First meaningful word of the company name ("Apple Inc." -> "apple").
+        words = [w for w in re.findall(r"[a-z0-9-]+", name.lower()) if w != "the"]
+        if words:
+            terms[words[0]] = ticker
+    return terms
+
+
+def detect_tickers(query: str, chunks: list[dict]) -> set[str]:
+    """Tickers of corpus companies explicitly mentioned in the query."""
+    q = query.lower()
+    q_tokens = set(re.findall(r"[a-z0-9-]+", q))
+    found: set[str] = set()
+    for term, ticker in _company_terms(chunks).items():
+        if term in q_tokens:
+            found.add(ticker)
+    return found
+
+
+# ---------------------------------------------------------------------------
+# Cross-encoder reranking
+# ---------------------------------------------------------------------------
+
+_RERANKER = None
+_RERANKER_FAILED = False  # set when the model can't be loaded (e.g. no network)
+
+
+def _load_reranker():
+    """Load the cross-encoder once; return None (and warn once) on failure.
+
+    Reranking is a precision boost, not a correctness requirement — if the
+    model cannot be downloaded (offline / blocked network), retrieval proceeds
+    with the RRF ordering instead of crashing the pipeline.
+    """
+    global _RERANKER, _RERANKER_FAILED
+    if _RERANKER is None and not _RERANKER_FAILED:
+        try:
+            from sentence_transformers import CrossEncoder
+
+            _RERANKER = CrossEncoder(CONFIG.models.reranker)
+        except Exception as exc:  # noqa: BLE001 — degrade gracefully
+            _RERANKER_FAILED = True
+            print(
+                f"[retrieve] reranker unavailable ({exc.__class__.__name__}); "
+                f"continuing with RRF order only."
+            )
+    return _RERANKER
+
+
+def rerank(query: str, candidates: list[dict]) -> list[tuple[dict, float]]:
+    """Score (query, chunk) pairs with the cross-encoder; highest first.
+
+    Falls back to the incoming order (scores of 0.0) when the model is
+    unavailable, keeping retrieval deterministic and non-fatal offline.
+    """
+    model = _load_reranker()
+    if model is None:
+        return [(c, 0.0) for c in candidates]
+    scores = model.predict([(query, c["text"]) for c in candidates])
+    order = sorted(zip(candidates, scores, strict=True), key=lambda t: -float(t[1]))
+    return [(c, float(s)) for c, s in order]
+
+
 def retrieve(
     query: str,
     *,
@@ -135,7 +215,30 @@ def retrieve(
             fused[cid] = fused.get(cid, 0.0) + s
 
     by_id = {c["chunk_id"]: c for c in chunks}
-    ranked_ids = sorted(fused, key=lambda cid: fused[cid], reverse=True)[:top_k]
+    ranked_ids = sorted(fused, key=lambda cid: fused[cid], reverse=True)
+
+    # --- Company filter ---
+    # If the query names corpus companies, prefer their chunks so an Apple
+    # question is not answered with (and cited to) another filer's text.
+    # Fill back with the remainder only if the filtered set is too small.
+    if CONFIG.retrieval.company_filter:
+        wanted = detect_tickers(query, chunks)
+        if wanted:
+            matching = [cid for cid in ranked_ids if by_id[cid]["ticker"] in wanted]
+            if len(matching) >= top_k:
+                ranked_ids = matching
+            else:
+                rest = [cid for cid in ranked_ids if by_id[cid]["ticker"] not in wanted]
+                ranked_ids = matching + rest
+
+    # --- Cross-encoder reranking ---
+    # Rerank the fused head with a cross-encoder for precision, then cut to k.
+    if CONFIG.retrieval.use_reranker:
+        head = ranked_ids[: max(CONFIG.retrieval.rerank_pool, top_k)]
+        reranked = rerank(query, [by_id[cid] for cid in head])
+        ranked_ids = [c["chunk_id"] for c, _s in reranked]
+
+    ranked_ids = ranked_ids[:top_k]
 
     results: list[RetrievedChunk] = []
     for i, cid in enumerate(ranked_ids, start=1):

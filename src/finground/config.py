@@ -72,6 +72,12 @@ class Retrieval:
     top_k: int = 8
     candidate_pool: int = 50  # per-ranker depth fused by RRF
     rrf_k: int = 60  # RRF smoothing constant
+    # Company-aware filtering: when the query names ingested companies, prefer
+    # their chunks (prevents e.g. NVDA chunks being cited in an Apple answer).
+    company_filter: bool = True
+    # Cross-encoder reranking of the fused pool (precision boost, CPU-friendly).
+    use_reranker: bool = True
+    rerank_pool: int = 24  # fused candidates fed to the cross-encoder
     # Best dense cosine similarity below which retrieved evidence is considered
     # too weak to answer from — the answerer hard-gates to a refusal. BGE
     # relevant passages typically score ~0.5-0.75; noise sits well below this.
