@@ -42,6 +42,10 @@ benchmark:  ## Evaluate models -> results/results.csv
 charts:  ## Render comparison charts from results/results.csv
 	$(BIN)/python scripts/make_charts.py
 
+.PHONY: readme
+readme:  ## Re-render the README results + judge-validation tables from results/
+	$(BIN)/python scripts/update_readme.py
+
 .PHONY: validate-judge
 validate-judge:  ## Report LLM-judge vs human-label agreement (Cohen's kappa)
 	$(BIN)/python -m finground.eval.validate_judge

@@ -3,7 +3,7 @@
 Swapping models is a config change, not a code change: models are named
 ``provider:model`` (e.g. ``openai:gpt-4o-mini``, ``anthropic:claude-sonnet-5``,
 ``ollama:llama3.1``). Keys are read from the environment; a provider with no key
-is simply reported as unavailable so the benchmark can mark it ``N/A``.
+is simply reported as unavailable so the benchmark can skip it.
 
 Responses are cached on disk keyed by (provider, model, system, user, temp) so
 re-running the benchmark does not re-bill the API.

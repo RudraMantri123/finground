@@ -9,11 +9,16 @@ For each model and each gold question we:
 
 Aggregates per model:
   model, correctness, citation_accuracy, hallucination_rate,
-  refusal_calibration, avg_latency_s, cost_per_100q, n_questions, n_answered.
+  refusal_calibration, avg_latency_s, cost_per_100q, n_questions, n_answered,
+  judge.
 
-Models whose provider is unavailable (no key / unreachable) are written as
-``N/A`` rows — never invented. Per-question detail is dumped to
-results/runs/<model>.jsonl for auditing.
+Results are MERGED into results/results.csv: a run updates only the rows for
+the models it evaluated, so a single-model community run (e.g.
+``--models openai:gpt-4o``) never wipes the rest of the leaderboard.
+
+Models whose provider is unavailable (no key / unreachable) are skipped —
+only models that actually ran appear in the results. Per-question detail is
+dumped to results/runs/<model>.jsonl for auditing.
 
 Usage:
   python scripts/run_benchmark.py                       # default candidate models
@@ -40,7 +45,7 @@ from finground.eval.metrics import (
 )
 from finground.llm import available_providers, parse_model
 
-# Candidate models to compare. Unavailable ones are marked N/A automatically.
+# Candidate models to compare. Unavailable ones are skipped automatically.
 DEFAULT_MODELS = [
     "openai:gpt-4o",
     "openai:gpt-4o-mini",
@@ -58,6 +63,7 @@ CSV_COLUMNS = [
     "cost_per_100q",
     "n_questions",
     "n_answered",
+    "judge",
 ]
 
 
@@ -139,7 +145,7 @@ def evaluate_model(model: str, items, judge_model: str) -> dict:
     if n_errors:
         print(f"    ({n_errors} item(s) skipped due to errors for {model})")
 
-    # Dump per-question detail (gitignored) for auditing.
+    # Dump per-question detail (committed) so leaderboard rows are auditable.
     runs_dir = CONFIG.paths.results / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
     safe = model.replace(":", "_").replace("/", "_")
@@ -165,20 +171,7 @@ def evaluate_model(model: str, items, judge_model: str) -> dict:
         "cost_per_100q": cost_per_100q,
         "n_questions": len(items),
         "n_answered": n_answered,
-    }
-
-
-def na_row(model: str, n_questions: int) -> dict:
-    return {
-        "model": model,
-        "correctness": None,
-        "citation_accuracy": None,
-        "hallucination_rate": None,
-        "refusal_calibration": None,
-        "avg_latency_s": None,
-        "cost_per_100q": None,
-        "n_questions": n_questions,
-        "n_answered": 0,
+        "judge": judge_model,
     }
 
 
@@ -217,8 +210,7 @@ def main(argv: list[str] | None = None) -> int:
     for model in models:
         provider = parse_model(model)[0]
         if provider not in providers:
-            print(f"[N/A] {model}: provider unavailable")
-            rows.append(na_row(model, len(items)))
+            print(f"[skip] {model}: provider unavailable")
             continue
         print(f"[run] {model} ...")
         rows.append(evaluate_model(model, items, judge_model))
@@ -231,24 +223,40 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     out = CONFIG.paths.results / "results.csv"
+
+    def _row_strs(r: dict) -> list[str]:
+        return [
+            r["model"],
+            _fmt(r["correctness"]),
+            _fmt(r["citation_accuracy"]),
+            _fmt(r["hallucination_rate"]),
+            _fmt(r["refusal_calibration"]),
+            _fmt(r["avg_latency_s"], 2),
+            _fmt(r["cost_per_100q"], 4),
+            str(r["n_questions"]),
+            str(r["n_answered"]),
+            r["judge"],
+        ]
+
+    # Merge with the committed leaderboard: rows for models evaluated in this
+    # run are replaced in place; everyone else's rows are preserved, so a
+    # single-model community contribution never wipes the table.
+    new_rows = {r["model"]: _row_strs(r) for r in rows}
+    merged: list[list[str]] = []
+    if out.exists():
+        with open(out, encoding="utf-8") as fh:
+            for old in csv.DictReader(fh):
+                if old["model"] in new_rows:
+                    merged.append(new_rows.pop(old["model"]))
+                else:
+                    merged.append([old.get(c, "") for c in CSV_COLUMNS])
+    merged.extend(new_rows[r["model"]] for r in rows if r["model"] in new_rows)
+
     with open(out, "w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
         writer.writerow(CSV_COLUMNS)
-        for r in rows:
-            writer.writerow(
-                [
-                    r["model"],
-                    _fmt(r["correctness"]),
-                    _fmt(r["citation_accuracy"]),
-                    _fmt(r["hallucination_rate"]),
-                    _fmt(r["refusal_calibration"]),
-                    _fmt(r["avg_latency_s"], 2),
-                    _fmt(r["cost_per_100q"], 4),
-                    r["n_questions"],
-                    r["n_answered"],
-                ]
-            )
-    print(f"\nWrote {out}")
+        writer.writerows(merged)
+    print(f"\nWrote {out} ({len(merged)} model row(s))")
     return 0
 
 

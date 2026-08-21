@@ -1,5 +1,9 @@
 # FinGround
 
+[![CI](https://github.com/RudraMantri123/finground/actions/workflows/ci.yml/badge.svg)](https://github.com/RudraMantri123/finground/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+
 **Faithfulness-first Financial RAG over SEC filings — a system that grounds every
 answer in cited evidence, abstains when the filings can't support one, and a
 benchmark that measures *hallucination*, not just correctness.**
@@ -84,18 +88,34 @@ excerpts don't support an answer.
 
 Numbers below come from real runs of `scripts/run_benchmark.py` over the 20-question
 FinGround gold set, judged by an LLM-as-judge (see **Evaluation methodology**).
-Models whose API key was not present at run time are marked **N/A** — never invented.
+Only models that actually ran are listed — numbers are never invented. The
+`Judge` column records which LLM judged each row.
+
+> ### 🌍 Help wanted: hosted-model evals
+>
+> This leaderboard was produced on a machine with **no paid API keys**, so every
+> scored model so far runs locally via Ollama. GPT-4o, GPT-4o-mini, and Claude
+> are fully supported — someone with a key just needs to press the button.
+> **If you have an OpenAI or Anthropic key**, you can put a hosted model on the
+> board in ~10 minutes and typically under $1–2:
+>
+> ```bash
+> make setup && make ingest && make index
+> .venv/bin/python scripts/run_benchmark.py --models openai:gpt-4o --judge openai:gpt-4o
+> make charts && make readme
+> ```
+>
+> Results **merge** — your run only touches your model's row. Open a PR with the
+> updated `results/results.csv` and the `results/runs/<model>.jsonl` audit dump.
+> Full steps and checklist: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 <!-- RESULTS_TABLE_START -->
-| Model | Correctness ↑ | Citation acc ↑ | Hallucination ↓ | Refusal cal ↑ | Latency (s) | $/100q | n | answered |
-|---|---|---|---|---|---|---|---|---|
-| openai:gpt-4o | N/A | N/A | N/A | N/A | N/A | N/A | 20 | 0 |
-| openai:gpt-4o-mini | N/A | N/A | N/A | N/A | N/A | N/A | 20 | 0 |
-| anthropic:claude-sonnet-5 | N/A | N/A | N/A | N/A | N/A | N/A | 20 | 0 |
-| ollama:llama3 | 0.467 | 0.900 | 0.007 | 1.000 | 51.59 | 0.0000 | 20 | 15 |
-| ollama:martain7r/finance-llama-8b:q4_k_m | 0.214 | 0.415 | 0.512 | 0.567 | 149.71 | 0.0000 | 20 | 18 |
-| ollama:0xroyce/plutus:latest | 0.500 | 0.803 | 0.207 | 0.500 | 61.25 | 0.0000 | 20 | 20 |
-| ollama:jjansen/adapt-finance-llama2-7b:latest | 0.267 | 0.708 | 0.420 | 0.600 | 14.35 | 0.0000 | 20 | 19 |
+| Model | Correctness ↑ | Citation acc ↑ | Hallucination ↓ | Refusal cal ↑ | Latency (s) | $/100q | n | answered | Judge |
+|---|---|---|---|---|---|---|---|---|---|
+| ollama:llama3 | 0.467 | 0.900 | 0.007 | 1.000 | 51.59 | 0.0000 | 20 | 15 | ollama:llama3 |
+| ollama:martain7r/finance-llama-8b:q4_k_m | 0.214 | 0.415 | 0.512 | 0.567 | 149.71 | 0.0000 | 20 | 18 | ollama:llama3 |
+| ollama:0xroyce/plutus:latest | 0.500 | 0.803 | 0.207 | 0.500 | 61.25 | 0.0000 | 20 | 20 | ollama:llama3 |
+| ollama:jjansen/adapt-finance-llama2-7b:latest | 0.267 | 0.708 | 0.420 | 0.600 | 14.35 | 0.0000 | 20 | 19 | ollama:llama3 |
 <!-- RESULTS_TABLE_END -->
 
 **Charts** (`results/charts/`, regenerate with `make charts`):

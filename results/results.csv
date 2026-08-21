@@ -1,8 +1,5 @@
-model,correctness,citation_accuracy,hallucination_rate,refusal_calibration,avg_latency_s,cost_per_100q,n_questions,n_answered
-openai:gpt-4o,N/A,N/A,N/A,N/A,N/A,N/A,20,0
-openai:gpt-4o-mini,N/A,N/A,N/A,N/A,N/A,N/A,20,0
-anthropic:claude-sonnet-5,N/A,N/A,N/A,N/A,N/A,N/A,20,0
-ollama:llama3,0.467,0.900,0.007,1.000,51.59,0.0000,20,15
-ollama:martain7r/finance-llama-8b:q4_k_m,0.214,0.415,0.512,0.567,149.71,0.0000,20,18
-ollama:0xroyce/plutus:latest,0.500,0.803,0.207,0.500,61.25,0.0000,20,20
-ollama:jjansen/adapt-finance-llama2-7b:latest,0.267,0.708,0.420,0.600,14.35,0.0000,20,19
+model,correctness,citation_accuracy,hallucination_rate,refusal_calibration,avg_latency_s,cost_per_100q,n_questions,n_answered,judge
+ollama:llama3,0.467,0.900,0.007,1.000,51.59,0.0000,20,15,ollama:llama3
+ollama:martain7r/finance-llama-8b:q4_k_m,0.214,0.415,0.512,0.567,149.71,0.0000,20,18,ollama:llama3
+ollama:0xroyce/plutus:latest,0.500,0.803,0.207,0.500,61.25,0.0000,20,20,ollama:llama3
+ollama:jjansen/adapt-finance-llama2-7b:latest,0.267,0.708,0.420,0.600,14.35,0.0000,20,19,ollama:llama3

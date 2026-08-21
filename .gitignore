@@ -23,9 +23,10 @@ indexes/
 .cache/
 llm_cache/
 
-# Results: commit derived artifacts (results.csv, charts, gold_set.jsonl,
-# human labels, judge_validation.json) but ignore bulky per-run dumps.
-results/runs/
+# Results: commit everything derived (results.csv, charts, gold_set.jsonl,
+# human labels, judge_validation.json) INCLUDING per-run dumps in
+# results/runs/ — they are the audit trail that lets anyone verify a
+# leaderboard row, which matters for community-contributed evals.
 
 # OS / editor
 .DS_Store

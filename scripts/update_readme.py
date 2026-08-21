@@ -27,6 +27,7 @@ _PRETTY = {
     "cost_per_100q": "$/100q",
     "n_questions": "n",
     "n_answered": "answered",
+    "judge": "Judge",
 }
 
 
