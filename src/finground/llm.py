@@ -2,8 +2,9 @@
 
 Swapping models is a config change, not a code change: models are named
 ``provider:model`` (e.g. ``openai:gpt-4o-mini``, ``anthropic:claude-sonnet-5``,
-``ollama:llama3.1``). Keys are read from the environment; a provider with no key
-is simply reported as unavailable so the benchmark can skip it.
+``cohere:command-a-03-2025``, ``ollama:llama3.1``). Keys are read from the
+environment; a provider with no key is simply reported as unavailable so the
+benchmark can skip it.
 
 Responses are cached on disk keyed by (provider, model, system, user, temp) so
 re-running the benchmark does not re-bill the API.
@@ -33,6 +34,9 @@ PRICING: dict[str, tuple[float, float]] = {
     "claude-sonnet-5": (3.00, 15.00),
     "claude-opus-5": (15.00, 75.00),
     "claude-haiku-4-5": (1.00, 5.00),
+    "command-a-03-2025": (2.50, 10.00),
+    "command-r-08-2024": (0.15, 0.60),
+    "command-r7b-12-2024": (0.0375, 0.15),
     # local models cost nothing per token
 }
 
@@ -80,6 +84,8 @@ def available_providers() -> set[str]:
         available.add("openai")
     if os.environ.get("ANTHROPIC_API_KEY"):
         available.add("anthropic")
+    if os.environ.get("COHERE_API_KEY"):
+        available.add("cohere")
     try:
         requests.get(f"{CONFIG.ollama_base_url}/api/tags", timeout=1.5)
         available.add("ollama")
@@ -187,6 +193,8 @@ class LLMClient:
             return self._anthropic(system, user, max_tokens)
         if self.provider == "ollama":
             return self._ollama(system, user, max_tokens)
+        if self.provider == "cohere":
+            return self._cohere(system, user, max_tokens)
         raise LLMUnavailable(f"Unknown provider {self.provider!r}")
 
     def _openai(self, system: str, user: str, max_tokens: int) -> tuple[str, int, int]:
@@ -224,6 +232,47 @@ class LLMClient:
         text = "".join(block.text for block in resp.content if block.type == "text")
         usage = resp.usage
         return text, getattr(usage, "input_tokens", 0), getattr(usage, "output_tokens", 0)
+
+    def _cohere(self, system: str, user: str, max_tokens: int) -> tuple[str, int, int]:
+        key = os.environ.get("COHERE_API_KEY")
+        if not key:
+            raise LLMUnavailable("COHERE_API_KEY not set")
+        payload = {
+            "model": self.model,
+            "temperature": self.temperature,
+            "max_tokens": max_tokens,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        }
+        # Trial keys are rate-limited per minute; back off on 429 instead of
+        # failing the item. Answers are disk-cached, so a stopped run resumes.
+        attempts = 6
+        for attempt in range(1, attempts + 1):
+            resp = requests.post(
+                "https://api.cohere.com/v2/chat",
+                headers={"Authorization": f"Bearer {key}"},
+                json=payload,
+                timeout=300,
+            )
+            if resp.status_code == 429 and attempt < attempts:
+                wait = int(resp.headers.get("Retry-After", 0)) or 15 * attempt
+                print(
+                    f"[llm] cohere rate-limited (attempt {attempt}/{attempts}); retrying in {wait}s"
+                )
+                time.sleep(wait)
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            text = "".join(
+                part.get("text", "")
+                for part in data.get("message", {}).get("content", [])
+                if part.get("type") == "text"
+            )
+            tokens = data.get("usage", {}).get("tokens", {})
+            return text, tokens.get("input_tokens", 0), tokens.get("output_tokens", 0)
+        raise LLMUnavailable("Cohere rate limit not cleared after retries")
 
     def _ollama(self, system: str, user: str, max_tokens: int) -> tuple[str, int, int]:
         url = f"{CONFIG.ollama_base_url}/api/chat"
