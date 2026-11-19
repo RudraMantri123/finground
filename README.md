@@ -201,6 +201,15 @@ risk-factor sections). A FinanceBench (`PatronusAI/financebench`) loader anchors
 public dataset; because its evidence lives in specific filing versions, it is
 optionally restricted to the companies in our corpus (coverage caveat below).
 
+**Retrieval eval (CI gate).** Retrieval is scored separately from generation, for
+free and without LLM calls. Answerable gold items carry phrase-based `evidence`
+labels that survive re-chunking. `scripts/eval_retrieval.py` reports recall@k,
+MRR@10 and nDCG@10 for BM25, dense, hybrid RRF and hybrid + rerank. CI runs it on
+every push against a committed fixture corpus and fails if any metric drops below
+`results/retrieval_thresholds.json`. CI measures *retrieval on the fixture*; the
+leaderboard above measures *generation on the full corpus*. Details and current
+numbers: [docs/retrieval_eval.md](docs/retrieval_eval.md).
+
 ---
 
 ## Reproducibility

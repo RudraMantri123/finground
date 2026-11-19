@@ -38,6 +38,10 @@ serve:  ## Run the FastAPI query service + demo page
 benchmark:  ## Evaluate models -> results/results.csv
 	$(BIN)/python scripts/run_benchmark.py
 
+.PHONY: eval-retrieval
+eval-retrieval:  ## Retrieval ablation on the committed fixture + threshold check (no LLM)
+	HF_HUB_OFFLINE=1 $(BIN)/python scripts/eval_retrieval.py --check results/retrieval_thresholds.json
+
 .PHONY: charts
 charts:  ## Render comparison charts from results/results.csv
 	$(BIN)/python scripts/make_charts.py

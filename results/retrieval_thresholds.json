@@ -1,0 +1,44 @@
+{
+  "corpus": "fixture",
+  "fixture_sha256": "33d9d91419cdf5b2a34e3d2691f5e411435e33f97be94d58d82c44b678116692",
+  "margin": 0.07,
+  "note": "Floors = measured value minus margin, rounded down to 2 dp. The margin is one question's worth of evidence on the 15-question set (1/15, rounded up): a near-tie flipping across CPUs, or one question losing its evidence, passes; losing more than that fails. Recalibrate (and justify in the PR) when the fixture, models, or retrieval config change on purpose.",
+  "thresholds": {
+    "bm25": {
+      "recall@1": 0.33,
+      "recall@3": 0.58,
+      "recall@5": 0.68,
+      "recall@8": 0.7,
+      "recall@10": 0.7,
+      "mrr@10": 0.59,
+      "ndcg@10": 0.61
+    },
+    "dense": {
+      "recall@1": 0.09,
+      "recall@3": 0.29,
+      "recall@5": 0.41,
+      "recall@8": 0.61,
+      "recall@10": 0.7,
+      "mrr@10": 0.39,
+      "ndcg@10": 0.45
+    },
+    "hybrid_rrf": {
+      "recall@1": 0.23,
+      "recall@3": 0.45,
+      "recall@5": 0.51,
+      "recall@8": 0.61,
+      "recall@10": 0.7,
+      "mrr@10": 0.54,
+      "ndcg@10": 0.54
+    },
+    "hybrid_rerank": {
+      "recall@1": 0.23,
+      "recall@3": 0.41,
+      "recall@5": 0.6,
+      "recall@8": 0.73,
+      "recall@10": 0.76,
+      "mrr@10": 0.48,
+      "ndcg@10": 0.56
+    }
+  }
+}
