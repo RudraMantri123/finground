@@ -81,43 +81,42 @@ rerank label.
 
 ## Current numbers (15 labelled questions)
 
-Fixture corpus (618 chunks). This is what CI measures and what the thresholds
-are calibrated on:
+Measured on the table-aware corpus (financial tables kept as Markdown tables,
+2,138 chunks). Fixture corpus (624 chunks). This is what CI measures and what
+the thresholds are calibrated on:
 
 | config | R@1 | R@3 | R@5 | R@8 | R@10 | MRR@10 | nDCG@10 |
 |---|---|---|---|---|---|---|---|
-| bm25 | 0.400 | 0.656 | 0.756 | 0.778 | 0.778 | 0.669 | 0.685 |
-| dense | 0.167 | 0.367 | 0.489 | 0.689 | 0.778 | 0.461 | 0.522 |
-| hybrid_rrf | 0.300 | 0.522 | 0.589 | 0.689 | 0.778 | 0.613 | 0.617 |
-| hybrid_rerank | 0.300 | 0.489 | 0.678 | 0.800 | 0.833 | 0.551 | 0.633 |
+| bm25 | 0.200 | 0.533 | 0.656 | 0.678 | 0.744 | 0.457 | 0.558 |
+| dense | 0.333 | 0.533 | 0.622 | 0.656 | 0.733 | 0.549 | 0.578 |
+| hybrid_rrf | 0.333 | 0.533 | 0.622 | 0.756 | 0.778 | 0.584 | 0.635 |
+| hybrid_rerank | 0.333 | 0.533 | 0.678 | 0.744 | 0.800 | 0.593 | 0.629 |
 
-Full local corpus (1,875 chunks, `--corpus full`). Not reproducible in CI:
+Full local corpus (2,138 chunks, `--corpus full`). Not reproducible in CI:
 
 | config | R@1 | R@3 | R@5 | R@8 | R@10 | MRR@10 | nDCG@10 |
 |---|---|---|---|---|---|---|---|
-| bm25 | 0.400 | 0.656 | 0.756 | 0.778 | 0.778 | 0.669 | 0.685 |
-| dense | 0.167 | 0.367 | 0.489 | 0.689 | 0.778 | 0.461 | 0.522 |
-| hybrid_rrf | 0.300 | 0.522 | 0.622 | 0.756 | 0.811 | 0.616 | 0.633 |
-| hybrid_rerank | 0.300 | 0.489 | 0.678 | 0.800 | 0.833 | 0.551 | 0.633 |
+| bm25 | 0.300 | 0.633 | 0.656 | 0.722 | 0.811 | 0.555 | 0.637 |
+| dense | 0.333 | 0.533 | 0.622 | 0.656 | 0.733 | 0.549 | 0.578 |
+| hybrid_rrf | 0.267 | 0.567 | 0.689 | 0.778 | 0.811 | 0.582 | 0.649 |
+| hybrid_rerank | 0.333 | 0.533 | 0.678 | 0.744 | 0.800 | 0.593 | 0.629 |
 
-The fixture matches the full corpus exactly for three of the four
-configurations, and is within 0.07 for `hybrid_rrf`.
-
-**Reading these honestly.** BM25 alone has the best early precision and
-reranking gives the best deep recall (R@8/R@10), but with 15 questions the
-paired-bootstrap intervals for bm25 vs hybrid_rerank and hybrid_rrf vs
-hybrid_rerank all include 0. **This set cannot tell those three apart.** The
-one difference that holds up is that **dense-only is worse** than the
-production pipeline at mid-depth recall (R@5 −0.19, 95% CI [−0.36, −0.06]).
-Its nDCG@10 gap (−0.11, CI [−0.24, +0.01]) is borderline. Two more caveats:
+**Reading these honestly.** The production pipeline (hybrid + rerank) has the
+best MRR@10 on both corpora, but every paired-bootstrap interval against it
+includes 0 on both corpora. **This 15-question set cannot tell the four
+configurations apart.** Moving from flattened text to Markdown tables changed
+the picture: dense-only retrieval improved (R@1 0.167 -> 0.333, MRR@10
+0.461 -> 0.549 on the fixture) and is no longer measurably worse than
+production, while BM25's early precision dropped (MRR@10 0.669 -> 0.457 on the
+fixture). Two more caveats:
 
 - The labels were found by lexical search and are verbatim filing phrases.
   That may favour BM25, which matches surface wording.
 - The general-domain MS MARCO cross-encoder sometimes promotes the wrong kind of
-  risk. On fg-006 (NVIDIA foundry dependence) it fills the top 10 with
-  supplier security-incident passages and pushes out the foundry risk factor
-  that BM25 ranks first. A finance-tuned reranker or a larger question set would be needed to
-  settle "does reranking help on 10-Ks?".
+  risk. On fg-006 (NVIDIA foundry dependence) it has filled the top 10 with
+  supplier security-incident passages and pushed out the foundry risk factor.
+  A finance-tuned reranker or a larger question set would be needed to settle
+  "does reranking help on 10-Ks?".
 
 ## Fixture corpus
 
@@ -131,7 +130,7 @@ corpus (metadata in `tests/fixtures/retrieval_corpus.meta.json`):
 3. **Background**: a seeded sample of 25 chunks per company, so BM25 IDF and the
    company filter see a realistic mix.
 
-The result is 618 chunks (~1.7 MB of filing text), embedded in memory on each run
+The result is 624 chunks (~2 MB of filing text), embedded in memory on each run
 (~15 s on a laptop CPU).
 
 ## Thresholds and the CI gate
