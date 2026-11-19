@@ -161,3 +161,45 @@ def test_company_filter_fills_back_when_scarce(tiny_index):
     results = retrieve("apple supply chain", top_k=3)
     assert len(results) == 3
     assert results[0].ticker == "AAPL"
+
+
+# -- ablation toggles (mode / use_reranker / indexes) --------------------------
+
+
+def test_single_ranker_modes_follow_that_ranker(tiny_index, monkeypatch):
+    # Dense favours NVDA, BM25 favours Apple; no company named -> no filter.
+    monkeypatch.setattr(
+        R,
+        "embed_queries",
+        lambda texts, model_name=None: np.array([[0.0, 1.0, 0.0, 0.0]], dtype="float32"),
+    )
+    q = "supply chain manufacturing components"
+    assert retrieve(q, top_k=1, mode="bm25", use_reranker=False)[0].ticker == "AAPL"
+    assert retrieve(q, top_k=1, mode="dense", use_reranker=False)[0].ticker == "NVDA"
+
+
+def test_unknown_mode_rejected(tiny_index):
+    with pytest.raises(ValueError):
+        retrieve("anything", mode="sparse")
+
+
+def test_use_reranker_override(tiny_index, monkeypatch):
+    calls = []
+
+    def fake_rerank(q, cands):
+        calls.append(len(cands))
+        return [(c, 0.0) for c in reversed(cands)]
+
+    monkeypatch.setattr(R, "rerank", fake_rerank)
+    retrieve("apple supply chain", top_k=3, use_reranker=False)
+    assert calls == []
+    retrieve("apple supply chain", top_k=3, use_reranker=True)
+    assert calls, "reranker should run when explicitly enabled"
+
+
+def test_explicit_indexes_bypass_disk_cache(tiny_index, monkeypatch):
+    # An explicit index wins over the process cache (used for eval fixtures).
+    monkeypatch.setattr(R, "_CACHE", None)
+    monkeypatch.setattr(R, "load_indexes", lambda force=False: pytest.fail("touched disk"))
+    results = retrieve("apple supply chain", top_k=2, indexes=tiny_index)
+    assert len(results) == 2

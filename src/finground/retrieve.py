@@ -12,13 +12,13 @@ import pickle
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import faiss
 import numpy as np
 
 from .config import CONFIG
-from .index import embed_queries, tokenize
+from .index import embed_passages, embed_queries, make_bm25, make_faiss, tokenize
 
 
 @dataclass
@@ -54,6 +54,29 @@ class _Indexes:
 
 
 _CACHE: _Indexes | None = None
+
+# Which rankers feed the fusion step. "hybrid" is the production setting; the
+# single-ranker modes exist so ablations reuse this exact code path (company
+# filter, reranker, cut-off) instead of re-implementing retrieval.
+RetrievalMode = Literal["hybrid", "bm25", "dense"]
+RETRIEVAL_MODES: tuple[str, ...] = ("hybrid", "bm25", "dense")
+
+
+def indexes_from_chunks(chunks: list[dict], *, model_name: str | None = None) -> _Indexes:
+    """Build both indexes in memory over ``chunks`` (no files written).
+
+    Used for small, committed evaluation corpora: embedding a few hundred
+    chunks is cheaper and more reproducible than shipping binary index files.
+    """
+    model_name = model_name or CONFIG.models.embed
+    vecs = embed_passages([c["text"] for c in chunks], model_name=model_name)
+    return _Indexes(
+        bm25=make_bm25(chunks),
+        bm25_chunks=chunks,
+        faiss_index=make_faiss(vecs),
+        dense_chunks=chunks,
+        model_name=model_name,
+    )
 
 
 def load_indexes(force: bool = False) -> _Indexes:
@@ -154,6 +177,15 @@ def _load_reranker():
     return _RERANKER
 
 
+def reranker_available() -> bool:
+    """Whether the cross-encoder loaded (tries once).
+
+    Serving degrades silently without it, but an evaluation must not: a
+    "reranked" score measured on the RRF fallback would be mislabelled.
+    """
+    return _load_reranker() is not None
+
+
 def rerank(query: str, candidates: list[dict]) -> list[tuple[dict, float]]:
     """Score (query, chunk) pairs with the cross-encoder; highest first.
 
@@ -173,6 +205,9 @@ def retrieve(
     *,
     top_k: int | None = None,
     pool: int | None = None,
+    mode: RetrievalMode = "hybrid",
+    use_reranker: bool | None = None,
+    indexes: _Indexes | None = None,
 ) -> list[RetrievedChunk]:
     """Hybrid retrieve for ``query``. Returns up to ``top_k`` fused chunks.
 
@@ -180,8 +215,17 @@ def retrieve(
     rankings are combined with Reciprocal Rank Fusion (RRF). Component scores
     (bm25, dense cosine) are attached to each result for transparency and for
     the answerer's evidence gate.
+
+    ``mode`` restricts fusion to one ranker (RRF over a single list preserves
+    that list's order), ``use_reranker`` overrides the config toggle, and
+    ``indexes`` swaps in an alternative corpus; all three exist for retrieval
+    ablations and default to the production behaviour.
     """
-    idx = load_indexes()
+    if mode not in RETRIEVAL_MODES:
+        raise ValueError(f"unknown retrieval mode {mode!r}; expected one of {RETRIEVAL_MODES}")
+    if use_reranker is None:
+        use_reranker = CONFIG.retrieval.use_reranker
+    idx = indexes if indexes is not None else load_indexes()
     top_k = top_k or CONFIG.retrieval.top_k
     pool = pool or CONFIG.retrieval.candidate_pool
     chunks = idx.bm25_chunks  # bm25 and dense share the same chunk ordering
@@ -209,8 +253,9 @@ def retrieve(
 
     # --- RRF fusion ---
     rrf_k = CONFIG.retrieval.rrf_k
+    rankings = {"hybrid": (bm25_ids, dense_ids), "bm25": (bm25_ids,), "dense": (dense_ids,)}[mode]
     fused: dict[str, float] = {}
-    for contrib in (_rrf_ranks(bm25_ids, rrf_k), _rrf_ranks(dense_ids, rrf_k)):
+    for contrib in (_rrf_ranks(ids, rrf_k) for ids in rankings):
         for cid, s in contrib.items():
             fused[cid] = fused.get(cid, 0.0) + s
 
@@ -233,7 +278,7 @@ def retrieve(
 
     # --- Cross-encoder reranking ---
     # Rerank the fused head with a cross-encoder for precision, then cut to k.
-    if CONFIG.retrieval.use_reranker:
+    if use_reranker:
         head = ranked_ids[: max(CONFIG.retrieval.rerank_pool, top_k)]
         reranked = rerank(query, [by_id[cid] for cid in head])
         ranked_ids = [c["chunk_id"] for c, _s in reranked]

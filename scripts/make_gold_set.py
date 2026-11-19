@@ -5,6 +5,13 @@ Questions are written to be answerable — or deliberately NOT answerable — fr
 the latest 10-Ks of the eight ingested companies. Gold answers are qualitative
 reference statements; the LLM judge scores meaning, not string match. Keeping
 the generator in code makes the set easy to review, extend, and regenerate.
+
+Answerable items also carry retrieval ``evidence`` labels (see
+``finground.eval.retrieval_metrics``): ticker + short verbatim phrases from the
+filing rather than chunk IDs, so the labels survive re-chunking. They were
+proposed by searching the chunk corpus for the gold answer's key phrases and
+then checked by reading every matching chunk. ``verified`` records that check;
+``uncertain`` flags labels a human reviewer should look at first.
 """
 
 from __future__ import annotations
@@ -245,7 +252,166 @@ ITEMS: list[GoldItem] = [
 ]
 
 
+def _ev(ticker: str, *phrases: str, note: str = "", uncertain: bool = False) -> dict:
+    """One evidence label; all ``phrases`` must appear in a relevant chunk."""
+    label: dict = {"ticker": ticker, "must_contain": list(phrases), "verified": True}
+    if uncertain:
+        label["uncertain"] = True
+    if note:
+        label["note"] = note
+    return label
+
+
+# Section names are deliberately not used as filters: the current parser
+# mislabels several sections (e.g. JPM and MSFT risk factors appear under
+# "Item 1. Business"), and the phrase + ticker pair is already specific.
+EVIDENCE: dict[str, list[dict]] = {
+    "fg-001": [
+        _ev(
+            "AAPL",
+            "depends on component and product manufacturing and logistical services "
+            "provided by outsourcing partners",
+            note="Item 1A risk factor heading sentence.",
+        ),
+        _ev(
+            "AAPL",
+            "reduce the Company's direct control over production and distribution",
+            note="Item 1A: consequence of outsourcing (cost, quality, quantity).",
+        ),
+    ],
+    "fg-002": [
+        _ev("AAPL", "single or limited sources", note="Item 1 supply + Item 1A risk factor."),
+        _ev(
+            "AAPL",
+            "custom components available from only one source",
+            note="Covers the 'custom parts' part of the gold answer.",
+        ),
+    ],
+    "fg-003": [
+        _ev(
+            "MSFT",
+            "Cyberattacks and security vulnerabilities could lead to reduced revenue, "
+            "increased costs, liability claims",
+            note="Risk factor heading (parser files it under Item 1).",
+        ),
+        _ev(
+            "MSFT",
+            "experienced cybersecurity incidents in which such actors have gained "
+            "unauthorized access",
+        ),
+    ],
+    "fg-004": [
+        _ev(
+            "AMZN",
+            "businesses are rapidly evolving and intensely competitive",
+            note="Risk factor 'We Face Intense Competition' (parser files it under Item 7).",
+        ),
+        _ev(
+            "AMZN",
+            "marketplace in which we compete is evolving rapidly and intensely competitive",
+            note="Item 1 'Competition' paragraph (parser files it under Item 2).",
+        ),
+    ],
+    "fg-005": [
+        _ev("GOOGL", "generate a significant portion of our revenues from advertising"),
+        _ev(
+            "GOOGL",
+            "more than 70% of total revenues from online advertising",
+            note="Quantifies 'substantial majority'; same paragraph as label 1 today.",
+        ),
+        _ev(
+            "GOOGL",
+            "fluctuations in the amounts our advertisers spend on advertising",
+            note="Tail of the same risk factor (ad-spend reductions harm results); "
+            "added after reading the chunk every config ranks highest. Partial support.",
+            uncertain=True,
+        ),
+    ],
+    "fg-006": [
+        _ev("NVDA", "depend on foundries to manufacture our semiconductor wafers"),
+        _ev("NVDA", "fabless and contracting manufacturing strategy", note="Item 1 Manufacturing."),
+    ],
+    "fg-007": [
+        _ev("TSLA", "highly dependent on the services of Elon Musk"),
+        _ev("TSLA", "unable to attract, hire and retain key employees"),
+    ],
+    "fg-008": [
+        _ev(
+            "JPM",
+            "businesses are highly regulated and are significantly affected by applicable law",
+            note="'Legal and Regulatory' risk factor.",
+        ),
+        _ev(
+            "JPM",
+            "ability to distribute capital to shareholders",
+            "regulatory capital requirements",
+            note="'Capital' risk factor and its summary bullet.",
+        ),
+    ],
+    "fg-009": [
+        _ev("KO", "Obesity and other health-related concerns may reduce demand"),
+        _ev("KO", "address evolving consumer product and shopping preferences"),
+        _ev("KO", "taxes on sweetened beverages"),
+    ],
+    "fg-010": [
+        _ev(
+            "AMZN",
+            "three segments: North America, International, and",
+            note="Phrase stops before 'AWS' / 'Amazon Web Services' so both wordings match.",
+        ),
+    ],
+    "fg-011": [
+        _ev("KO", "two lines of business: concentrate operations and finished product operations"),
+        _ev("KO", "bottling partners combine concentrates with still or sparkling water"),
+    ],
+    "fg-012": [
+        _ev(
+            "MSFT",
+            "Intelligent Cloud segment consists of our public, private, and hybrid server "
+            "products and cloud services",
+            note="Segment note in Item 8.",
+            uncertain=True,
+        ),
+        _ev(
+            "MSFT",
+            "Azure and other cloud services",
+            "consumption-based services",
+            note="Segment note + MD&A metric definition.",
+            uncertain=True,
+        ),
+    ],
+    "fg-013": [
+        _ev("NVDA", "export restrictions and export licensing requirements targeting China"),
+        _ev("NVDA", "competitive position has been harmed by export controls"),
+        _ev(
+            "NVDA",
+            "requires a license for export to China",
+            "H20",
+            note="More specific than the gold answer (H20 licence); drop if too narrow.",
+            uncertain=True,
+        ),
+    ],
+    "fg-014": [
+        _ev("AAPL", "Restrictions on international trade, such as tariffs"),
+        _ev(
+            "AAPL",
+            "reciprocal tariffs on imports from the U.S.",
+            note="Item 1A + MD&A 'Tariffs and Other Measures'.",
+        ),
+    ],
+    "fg-015": [
+        _ev("JPM", "economic uncertainty resulting from political and geopolitical developments"),
+        _ev("JPM", "Adverse economic and market events and conditions could negatively affect"),
+    ],
+}
+
+
 def main() -> int:
+    for item in ITEMS:
+        item.evidence = EVIDENCE.get(item.id, [])
+    missing = [i.id for i in ITEMS if i.answerable and not i.evidence]
+    if missing:
+        raise SystemExit(f"answerable items without evidence labels: {missing}")
     n = write_gold_set(ITEMS)
     answerable = sum(1 for i in ITEMS if i.answerable)
     print(f"Wrote {n} gold items ({answerable} answerable, {n - answerable} unanswerable).")

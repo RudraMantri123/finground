@@ -37,9 +37,17 @@ class GoldItem:
     category: str = "general"  # e.g. risk_factors, business, geoeconomic
     source: str = "finground_gold"
     notes: str = ""
+    # Retrieval relevance labels (see eval/retrieval_metrics.py): short phrases a
+    # relevant chunk must contain, so the labels survive re-chunking. Entries may
+    # also carry review metadata ("verified", "uncertain", "note").
+    evidence: list[dict] = field(default_factory=list)
 
     def to_json(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        # Optional field: omit when empty so unlabelled rows stay unchanged on disk.
+        if not d["evidence"]:
+            del d["evidence"]
+        return d
 
 
 def load_gold_set(path: Path | None = None) -> list[GoldItem]:
