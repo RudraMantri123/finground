@@ -197,3 +197,135 @@ def refusal_calibration(decisions: list[tuple[bool, bool]]) -> RefusalStats:
 def mean_ignoring_none(values: list[float | None]) -> float | None:
     present = [v for v in values if v is not None]
     return sum(present) / len(present) if present else None
+
+
+# ---------------------------------------------------------------------------
+# Operational metrics: latency percentiles, citation coverage, failures
+# ---------------------------------------------------------------------------
+
+
+def percentile(values: list[float], q: float) -> float | None:
+    """``q``-th percentile (0-100) with linear interpolation (numpy's default).
+
+    Averages hide tails: one slow local generation can double the mean while
+    the typical request is unchanged, so the leaderboard reports p50/p95.
+    """
+    xs = sorted(v for v in values if v is not None)
+    if not xs:
+        return None
+    if not 0 <= q <= 100:
+        raise ValueError(f"percentile q must be in [0, 100], got {q}")
+    pos = (len(xs) - 1) * q / 100
+    lo = int(pos)
+    hi = min(lo + 1, len(xs) - 1)
+    return xs[lo] + (xs[hi] - xs[lo]) * (pos - lo)
+
+
+# A claim unit is a line, or a sentence within a line. Sentence boundaries are
+# only taken before an uppercase letter so decimals ("1.5") and lowercase
+# continuations ("Inc. reported") do not split.
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z])")
+_BULLET_RE = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+")
+
+
+def claim_units(answer_text: str) -> list[str]:
+    """Split an answer into the sentence-level units that should carry a citation.
+
+    Structural text is excluded because it asserts nothing: blank lines,
+    markdown headings, and lead-in lines ending in ``:`` (e.g. "The risks
+    include:"), as well as fragments with no letters or digits.
+    """
+    units: list[str] = []
+    for raw_line in (answer_text or "").splitlines():
+        line = _BULLET_RE.sub("", raw_line).strip()
+        if not line or line.startswith("#"):
+            continue
+        for sent in _SENTENCE_SPLIT_RE.split(line):
+            sent = sent.strip()
+            if not sent or sent.endswith(":"):
+                continue
+            if not re.search(r"[A-Za-z0-9]", re.sub(r"\[[^\]]*\]", "", sent)):
+                continue  # a bare citation like "[C1]" left on its own
+            units.append(sent)
+    return units
+
+
+def response_citation_coverage(answer_text: str, valid_labels: set[str] | list[str]) -> bool:
+    """True iff every claim unit cites, and every cited label is a retrieved chunk.
+
+    Stricter than citation accuracy (which only grades the citations that are
+    present): an uncited sentence or a citation to an excerpt that was never
+    shown to the model (e.g. ``[C9]`` with 8 retrieved) fails the response.
+    Uses the answerer's own citation parser so both agree on what a citation is.
+    """
+    from ..answer import extract_cited_labels  # lazy: answer pulls in FAISS
+
+    valid = set(valid_labels)
+    units = claim_units(answer_text)
+    if not units:
+        return False
+    for unit in units:
+        labels = extract_cited_labels(unit)
+        if not labels or any(lbl not in valid for lbl in labels):
+            return False
+    return True
+
+
+def citation_coverage(flags: list[bool | None]) -> float | None:
+    """Share of answered responses that are fully cited (``None`` = not answered)."""
+    present = [f for f in flags if f is not None]
+    return sum(1 for f in present if f) / len(present) if present else None
+
+
+def is_unsupported(claim_supports: list[bool]) -> bool:
+    """A judged response fails if the judge marks any of its claims unsupported."""
+    return any(not s for s in claim_supports)
+
+
+def failure_rate(n_items: int, n_exceptions: int, n_unsupported: int) -> float | None:
+    """(pipeline/judge exceptions + judge-unsupported responses) / items."""
+    if n_items <= 0:
+        return None
+    return (n_exceptions + n_unsupported) / n_items
+
+
+# ---------------------------------------------------------------------------
+# Bootstrap confidence intervals
+# ---------------------------------------------------------------------------
+
+
+def bootstrap_ci(
+    items: list,
+    statistic,
+    *,
+    n_resamples: int = 1000,
+    seed: int = 0,
+    confidence: float = 0.95,
+) -> tuple[float, float] | None:
+    """Percentile-bootstrap CI for ``statistic(items)``, resampling items.
+
+    Items are whole benchmark questions, so metrics with a per-question
+    denominator (e.g. correctness only over gold-labelled answers) are
+    recomputed exactly as in the point estimate. Resamples on which the
+    statistic is undefined (``None``) are dropped. Seeded for reproducible
+    leaderboard rows. Returns ``None`` when there is nothing to resample.
+    """
+    import random
+
+    if not items:
+        return None
+    rng = random.Random(seed)
+    n = len(items)
+    stats: list[float] = []
+    for _ in range(n_resamples):
+        sample = [items[rng.randrange(n)] for _ in range(n)]
+        v = statistic(sample)
+        if v is not None:
+            stats.append(float(v))
+    if not stats:
+        return None
+    alpha = (1 - confidence) / 2
+    lo = percentile(stats, 100 * alpha)
+    hi = percentile(stats, 100 * (1 - alpha))
+    assert lo is not None and hi is not None
+    return lo, hi

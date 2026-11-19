@@ -43,6 +43,10 @@ dev = [
     "black>=24.4.0",
     "mypy>=1.10.0",
 ]
+# Optional trace export to Langfuse (activated by LANGFUSE_PUBLIC_KEY/SECRET_KEY).
+observability = [
+    "langfuse>=2.0.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/RudraMantri123/finground"

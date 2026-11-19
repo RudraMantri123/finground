@@ -21,6 +21,7 @@ from typing import Any
 
 import requests
 
+from . import tracing
 from .config import CONFIG
 
 # Approximate published list prices in USD per 1M tokens (input, output), used
@@ -147,12 +148,13 @@ class LLMClient:
 
     def complete(self, system: str, user: str, *, max_tokens: int = 1024) -> LLMResponse:
         extra = f"num_ctx={ollama_num_ctx()}" if self.provider == "ollama" else ""
+        t0 = tracing.now()
         if self.use_cache:
             key = _cache_key(self.provider, self.model, system, user, self.temperature, extra)
             path = _cache_path(key)
             if path.exists():
                 data = json.loads(path.read_text())
-                return LLMResponse(
+                cached = LLMResponse(
                     text=data["text"],
                     model=self.model_spec,
                     prompt_tokens=data.get("prompt_tokens", 0),
@@ -160,9 +162,15 @@ class LLMClient:
                     latency_s=data.get("latency_s", 0.0),
                     cached=True,
                 )
+                self._trace(t0, system, user, cached)
+                return cached
 
         start = time.perf_counter()
-        text, in_tok, out_tok = self._dispatch(system, user, max_tokens)
+        try:
+            text, in_tok, out_tok = self._dispatch(system, user, max_tokens)
+        except Exception as exc:
+            tracing.record_span("generate", t0, model=self.model_spec, error=type(exc).__name__)
+            raise
         latency = time.perf_counter() - start
         resp = LLMResponse(
             text=text,
@@ -182,7 +190,31 @@ class LLMClient:
                     }
                 )
             )
+        self._trace(t0, system, user, resp)
         return resp
+
+    def _trace(self, t0: float, system: str, user: str, resp: LLMResponse) -> None:
+        """Record the generation span (hash, tokens, cost, cache hit) if traced.
+
+        ``llm_latency_s`` is the provider latency as originally measured — on a
+        cache hit that is the cached call's latency, while the span duration is
+        the (near-zero) time actually spent now.
+        """
+        if not tracing.active():
+            return
+        attrs: dict[str, Any] = {
+            "model": self.model_spec,
+            "prompt_hash": tracing.prompt_hash(system, user),
+            "cache_hit": resp.cached,
+            "prompt_tokens": resp.prompt_tokens,
+            "completion_tokens": resp.completion_tokens,
+            "cost_usd": resp.cost_usd,
+            "llm_latency_s": resp.latency_s,
+        }
+        if tracing.store_prompts():
+            attrs["prompt_system"] = system
+            attrs["prompt_user"] = user
+        tracing.record_span("generate", t0, **attrs)
 
     # -- provider dispatch --------------------------------------------------
 

@@ -17,6 +17,7 @@ from typing import Any
 import faiss
 import numpy as np
 
+from . import tracing
 from .config import CONFIG
 from .index import embed_queries, tokenize
 
@@ -181,6 +182,7 @@ def retrieve(
     (bm25, dense cosine) are attached to each result for transparency and for
     the answerer's evidence gate.
     """
+    t_start = tracing.now()
     idx = load_indexes()
     top_k = top_k or CONFIG.retrieval.top_k
     pool = pool or CONFIG.retrieval.candidate_pool
@@ -191,13 +193,16 @@ def retrieve(
     pool = min(pool, n)
 
     # --- BM25 ranking ---
+    t0 = tracing.now()
     q_tokens = tokenize(query)
     bm25_scores = np.asarray(idx.bm25.get_scores(q_tokens), dtype="float32")
     bm25_top = np.argsort(-bm25_scores)[:pool]
     bm25_ids = [chunks[i]["chunk_id"] for i in bm25_top]
     bm25_score_by_id = {chunks[i]["chunk_id"]: float(bm25_scores[i]) for i in bm25_top}
+    tracing.record_span("retrieve.bm25", t0, pool=pool)
 
     # --- Dense ranking ---
+    t0 = tracing.now()
     q_vec = embed_queries([query], model_name=idx.model_name)
     sims, dense_top = idx.faiss_index.search(q_vec, pool)
     sims = sims[0]
@@ -206,8 +211,10 @@ def retrieve(
     dense_score_by_id = {
         chunks[i]["chunk_id"]: float(s) for i, s in zip(dense_top, sims, strict=True) if i >= 0
     }
+    tracing.record_span("retrieve.dense", t0, pool=pool)
 
     # --- RRF fusion ---
+    t0 = tracing.now()
     rrf_k = CONFIG.retrieval.rrf_k
     fused: dict[str, float] = {}
     for contrib in (_rrf_ranks(bm25_ids, rrf_k), _rrf_ranks(dense_ids, rrf_k)):
@@ -216,12 +223,14 @@ def retrieve(
 
     by_id = {c["chunk_id"]: c for c in chunks}
     ranked_ids = sorted(fused, key=lambda cid: fused[cid], reverse=True)
+    tracing.record_span("retrieve.fusion", t0, candidates=len(ranked_ids))
 
     # --- Company filter ---
     # If the query names corpus companies, prefer their chunks so an Apple
     # question is not answered with (and cited to) another filer's text.
     # Fill back with the remainder only if the filtered set is too small.
     if CONFIG.retrieval.company_filter:
+        t0 = tracing.now()
         wanted = detect_tickers(query, chunks)
         if wanted:
             matching = [cid for cid in ranked_ids if by_id[cid]["ticker"] in wanted]
@@ -230,13 +239,23 @@ def retrieve(
             else:
                 rest = [cid for cid in ranked_ids if by_id[cid]["ticker"] not in wanted]
                 ranked_ids = matching + rest
+        tracing.record_span("retrieve.company_filter", t0, tickers=sorted(wanted))
 
     # --- Cross-encoder reranking ---
     # Rerank the fused head with a cross-encoder for precision, then cut to k.
     if CONFIG.retrieval.use_reranker:
+        t0 = tracing.now()
         head = ranked_ids[: max(CONFIG.retrieval.rerank_pool, top_k)]
         reranked = rerank(query, [by_id[cid] for cid in head])
         ranked_ids = [c["chunk_id"] for c, _s in reranked]
+        tracing.record_span(
+            "retrieve.rerank", t0, pool=len(head), model_loaded=not _RERANKER_FAILED
+        )
+        if tracing.active():  # the reorder: what the cross-encoder moved, and how far
+            tracing.annotate(
+                rerank_before=[{"chunk_id": cid, "rrf_score": fused[cid]} for cid in head],
+                rerank_after=[{"chunk_id": c["chunk_id"], "rerank_score": s} for c, s in reranked],
+            )
 
     ranked_ids = ranked_ids[:top_k]
 
@@ -260,6 +279,7 @@ def retrieve(
                 span=tuple(c.get("span", (0, 0))),
             )
         )
+    tracing.record_span("retrieve", t_start, top_k=top_k, returned=len(results))
     return results
 
 
