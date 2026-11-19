@@ -1,8 +1,11 @@
 """FastAPI service exposing the cited-answering pipeline.
 
     POST /query {question, model?, top_k?} -> {answer, citations[], abstained, ...}
+    GET  /dashboard -> observability report over traces/ + results/
 
-Also serves the static demo page at ``/``.
+Also serves the static demo page at ``/``. Every /query is traced (see
+``tracing.py``); the trace id is returned in the ``X-Trace-Id`` header so a
+user-reported bad answer can be looked up in the dashboard.
 """
 
 from __future__ import annotations
@@ -10,9 +13,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
+from . import tracing
 from .answer import answer_question
 from .config import CONFIG
 from .llm import LLMUnavailable, available_providers
@@ -40,16 +44,33 @@ def health() -> dict:
 
 @app.post("/query")
 def query(req: QueryRequest) -> JSONResponse:
-    try:
-        ans = answer_question(req.question, model=req.model, top_k=req.top_k)
-    except FileNotFoundError as exc:
-        return JSONResponse(status_code=503, content={"error": str(exc)})
-    except LLMUnavailable as exc:
-        return JSONResponse(
-            status_code=503,
-            content={"error": f"LLM provider unavailable: {exc}. Set a key or pick another model."},
-        )
-    return JSONResponse(content=ans.to_json())
+    model = req.model or CONFIG.models.answer
+    with tracing.trace("query", source="api", question=req.question, model=model) as tr:
+        headers = {"X-Trace-Id": tr.trace_id} if tr is not None else None
+        try:
+            ans = answer_question(req.question, model=req.model, top_k=req.top_k)
+        except FileNotFoundError as exc:
+            tracing.record_error(exc)
+            return JSONResponse(status_code=503, content={"error": str(exc)}, headers=headers)
+        except LLMUnavailable as exc:
+            tracing.record_error(exc)
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": f"LLM provider unavailable: {exc}. Set a key or pick another model."
+                },
+                headers=headers,
+            )
+        tracing.record_answer(ans)
+        return JSONResponse(content=ans.to_json(), headers=headers)
+
+
+@app.get("/dashboard")
+def dashboard() -> HTMLResponse:
+    """Observability report, rebuilt from traces/ and results/ on each request."""
+    from .dashboard import build_dashboard
+
+    return HTMLResponse(build_dashboard())
 
 
 @app.get("/")

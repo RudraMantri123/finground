@@ -110,12 +110,14 @@ Only models that actually ran are listed — numbers are never invented. The
 > Full steps and checklist: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 <!-- RESULTS_TABLE_START -->
-| Model | Correctness ↑ | Citation acc ↑ | Hallucination ↓ | Refusal cal ↑ | Latency (s) | $/100q | n | answered | Judge |
-|---|---|---|---|---|---|---|---|---|---|
-| ollama:llama3 | 0.467 | 0.900 | 0.007 | 1.000 | 51.59 | 0.0000 | 20 | 15 | ollama:llama3 |
-| ollama:martain7r/finance-llama-8b:q4_k_m | 0.214 | 0.415 | 0.512 | 0.567 | 149.71 | 0.0000 | 20 | 18 | ollama:llama3 |
-| ollama:0xroyce/plutus:latest | 0.500 | 0.803 | 0.207 | 0.500 | 61.25 | 0.0000 | 20 | 20 | ollama:llama3 |
-| ollama:jjansen/adapt-finance-llama2-7b:latest | 0.267 | 0.708 | 0.420 | 0.600 | 14.35 | 0.0000 | 20 | 19 | ollama:llama3 |
+| Model | Correctness ↑ | Citation acc ↑ | Hallucination ↓ | Refusal cal ↑ | Cite coverage ↑ | Failure ↓ | Latency p50 / p95 (s) | $/request | n | answered | Judge |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| ollama:llama3 | 0.467 [0.21, 0.71] | 0.900 [0.79, 1.00] | 0.007 [0.00, 0.02] | 1.000 [1.00, 1.00] | 0.467 | 0.050 | 50.28 / 67.78 | 0.000000 | 20 | 15 | ollama:llama3 |
+| ollama:martain7r/finance-llama-8b:q4_k_m | 0.214 [0.00, 0.44] | 0.415 [0.23, 0.60] | 0.512 [0.32, 0.71] | 0.567 [0.42, 0.77] | 0.000 | 0.600 | 107.15 / 246.99 | 0.000000 | 20 | 18 | ollama:llama3 |
+| ollama:0xroyce/plutus:latest | 0.500 [0.25, 0.77] | 0.803 [0.64, 0.93] | 0.207 [0.07, 0.38] | 0.500 [0.50, 0.50] | 0.050 | 0.300 | 57.90 / 120.59 | 0.000000 | 20 | 20 | ollama:llama3 |
+| ollama:jjansen/adapt-finance-llama2-7b:latest | 0.267 [0.06, 0.47] | 0.708 [0.51, 0.87] | 0.420 [0.23, 0.60] | 0.600 [0.50, 0.83] | 0.684 | 0.600 | 12.50 / 30.39 | 0.000000 | 20 | 19 | ollama:llama3 |
+
+Brackets: bootstrap 95% CI (1,000 seeded resamples over questions). Cite coverage: share of answers where every sentence carries a valid `[C#]`. Failure: (exceptions + answers with any judge-unsupported claim) / n. Latency: LLM generation time, p50 / p95.
 <!-- RESULTS_TABLE_END -->
 
 **Charts** (`results/charts/`, regenerate with `make charts`):
@@ -238,6 +240,41 @@ use and falls back to RRF order offline. LLM responses are cached on disk
 (`llm_cache/`) so re-runs don't re-bill; generation options are part of the cache
 key, so changing them re-generates instead of serving stale outputs.
 
+## Observability
+
+Aggregate scores say *that* quality moved; traces say *where*. Every `POST /query`
+and every benchmark item produces one trace (`src/finground/tracing.py`), appended
+as a JSON line to `traces/YYYY-MM-DD.jsonl` (gitignored). A trace records the
+question, model, prompt version (when the prompt is versioned), a SHA-256 of the
+exact prompt (raw text only with `FINGROUND_TRACE_PROMPTS=1`), the answer, refusal
+and evidence-gate outcome, citation coverage, tokens, cost, cache hit, any error,
+the retrieved chunks with dense / BM25 / RRF scores, the candidate order before and
+after cross-encoder reranking, and per-span latency for `retrieve.bm25`,
+`retrieve.dense`, `retrieve.fusion`, `retrieve.company_filter`, `retrieve.rerank`,
+`evidence_gate`, `generate` (and `judge.generate` in benchmarks). The API returns
+the trace id in an `X-Trace-Id` header. Tracing costs ~0.1 ms per request and can
+never fail a request; `FINGROUND_TRACING=0` turns it off.
+
+```bash
+make dashboard        # -> traces/dashboard.html (one self-contained file; open it)
+make serve            # ...or browse http://localhost:8000/dashboard (rebuilt per request)
+```
+
+The dashboard shows error / refusal / citation-coverage / judge-unsupported rates,
+latency p50/p95 and cost per day (per hour when all traces fall on one day), span
+latency p50/p95 over time, a model × prompt-version breakdown, the leaderboard with
+CIs, and a filterable trace list with drill-down (span waterfall, retrieved chunks,
+rerank movement, answer). To export to Langfuse as well, `pip install -e
+".[observability]"` and set `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` (and
+`LANGFUSE_BASE_URL` / `LANGFUSE_HOST` if self-hosted).
+
+Leaderboard rows written before these columns existed are filled by
+`python scripts/recompute_results.py --latency-from-cache`, which recomputes from
+the committed `results/runs/*.jsonl` and recovers per-question latencies by
+replaying against the LLM cache — accepting a latency only if the cached answer
+matches the committed one byte-for-byte (the recovered means reproduce the
+committed `avg_latency_s` exactly). Anything it cannot recompute stays blank.
+
 ---
 
 ## Limitations & honesty
@@ -290,8 +327,8 @@ key, so changing them re-generates instead of serving stale outputs.
 ## Repository layout
 
 ```
-src/finground/       ingest · index · retrieve · answer · llm · serve · eval/
-scripts/             run_ingest · run_index · run_benchmark · make_charts · make_gold_set · make_human_labels · update_readme
+src/finground/       ingest · index · retrieve · answer · llm · serve · tracing · dashboard · eval/
+scripts/             run_ingest · run_index · run_benchmark · make_charts · make_gold_set · make_human_labels · update_readme · make_dashboard · recompute_results
 results/             results.csv · charts/ · judge_validation.json · gold_set.jsonl · human_labels/
 demo/                static grounded-QA page hitting /query
 tests/               chunking · retrieval provenance · metric math · answering (33 tests)

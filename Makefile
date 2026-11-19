@@ -42,6 +42,10 @@ benchmark:  ## Evaluate models -> results/results.csv
 charts:  ## Render comparison charts from results/results.csv
 	$(BIN)/python scripts/make_charts.py
 
+.PHONY: dashboard
+dashboard:  ## Build the observability report (traces + leaderboard) -> traces/dashboard.html
+	$(BIN)/python scripts/make_dashboard.py
+
 .PHONY: readme
 readme:  ## Re-render the README results + judge-validation tables from results/
 	$(BIN)/python scripts/update_readme.py

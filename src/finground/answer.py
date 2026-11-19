@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 from dataclasses import asdict, dataclass, field
 
+from . import tracing
 from .config import CONFIG
 from .llm import LLMClient, LLMResponse
 from .retrieve import RetrievedChunk, best_dense_sim, retrieve
@@ -128,10 +129,19 @@ def answer_question(
         }
         for r in retrieved
     ]
+    t_gate = tracing.now()
     evidence = best_dense_sim(retrieved)
+    gated = not retrieved or evidence < CONFIG.retrieval.min_dense_sim
+    tracing.record_span(
+        "evidence_gate",
+        t_gate,
+        best_dense_sim=evidence,
+        threshold=CONFIG.retrieval.min_dense_sim,
+        passed=not gated,
+    )
 
     # Hard evidence gate: too weak to answer -> abstain without spending tokens.
-    if not retrieved or evidence < CONFIG.retrieval.min_dense_sim:
+    if gated:
         return Answer(
             question=question,
             answer=REFUSAL,

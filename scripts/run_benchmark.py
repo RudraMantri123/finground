@@ -7,10 +7,14 @@ For each model and each gold question we:
      (faithfulness), and citation support,
   3. record the answer/abstain decision for refusal calibration.
 
-Aggregates per model:
-  model, correctness, citation_accuracy, hallucination_rate,
-  refusal_calibration, avg_latency_s, cost_per_100q, n_questions, n_answered,
-  judge.
+Aggregates per model (see ``CSV_COLUMNS``): the four quality metrics, each
+with a seeded bootstrap 95% CI (``*_ci_lo`` / ``*_ci_hi``), plus citation
+coverage, failure rate, latency p50/p95/avg, cost per request and per 100
+questions, counts, and the judge. All of it is computed from the per-question
+rows by ``finground.eval.summary``, the same code that recomputes committed runs.
+
+Every item is traced (``traces/``; see ``finground.tracing``), with the trace
+id stored on its run row so a bad leaderboard number can be drilled into.
 
 Results are MERGED into results/results.csv: a run updates only the rows for
 the models it evaluated, so a single-model community run (e.g.
@@ -32,7 +36,10 @@ import argparse
 import csv
 import json
 import sys
+import uuid
+from datetime import UTC, datetime
 
+from finground import tracing
 from finground.answer import answer_question
 from finground.config import CONFIG
 from finground.eval.datasets import load_financebench, load_gold_set
@@ -40,9 +47,10 @@ from finground.eval.judge import judge_answer
 from finground.eval.metrics import (
     citation_accuracy,
     hallucination_rate,
-    mean_ignoring_none,
-    refusal_calibration,
+    is_unsupported,
+    response_citation_coverage,
 )
+from finground.eval.summary import summarize_rows
 from finground.llm import available_providers, parse_model
 
 # Candidate models to compare. Unavailable ones are skipped automatically.
@@ -56,90 +64,79 @@ DEFAULT_MODELS = [
 CSV_COLUMNS = [
     "model",
     "correctness",
+    "correctness_ci_lo",
+    "correctness_ci_hi",
     "citation_accuracy",
+    "citation_accuracy_ci_lo",
+    "citation_accuracy_ci_hi",
     "hallucination_rate",
+    "hallucination_rate_ci_lo",
+    "hallucination_rate_ci_hi",
     "refusal_calibration",
+    "refusal_calibration_ci_lo",
+    "refusal_calibration_ci_hi",
+    "citation_coverage",
+    "failure_rate",
+    "latency_p50_s",
+    "latency_p95_s",
     "avg_latency_s",
+    "cost_per_request",
     "cost_per_100q",
     "n_questions",
     "n_answered",
     "judge",
 ]
 
+# Display precision per column (digits after the point); counts/strings absent.
+_PRECISION = {
+    "latency_p50_s": 2,
+    "latency_p95_s": 2,
+    "avg_latency_s": 2,
+    "cost_per_request": 6,
+    "cost_per_100q": 4,
+}
+
 
 def _fmt(x: float | None, nd: int = 3) -> str:
     return "N/A" if x is None else f"{x:.{nd}f}"
 
 
-def evaluate_model(model: str, items, judge_model: str) -> dict:
+def row_strs(r: dict) -> list[str]:
+    """Format one summary dict as a CSV row in ``CSV_COLUMNS`` order."""
+    out = []
+    for col in CSV_COLUMNS:
+        v = r.get(col)
+        if col in ("model", "judge", "n_questions", "n_answered"):
+            out.append(str(v))
+        else:
+            out.append(_fmt(v, _PRECISION.get(col, 3)))
+    return out
+
+
+def evaluate_model(model: str, items, judge_model: str, run_id: str = "") -> dict:
     """Run the full pipeline + judge for one model over the gold items."""
-    correctness_labels: list[bool] = []
-    citation_scores: list[float | None] = []
-    hallucination_scores: list[float | None] = []
-    decisions: list[tuple[bool, bool]] = []
-    latencies: list[float] = []
-    total_cost = 0.0
     cost_known = True
-    n_answered = 0
     n_errors = 0
     detail = []
 
     for it in items:
-        # A single flaky/slow local inference must not abort the whole benchmark.
-        try:
-            ans = answer_question(it.question, model=model)
-        except Exception as exc:  # noqa: BLE001 — record and skip the item
+        with tracing.trace(
+            "benchmark_item",
+            source="benchmark",
+            run_id=run_id,
+            item_id=it.id,
+            question=it.question,
+            model=model,
+            judge_model=judge_model,
+            answerable=it.answerable,
+        ) as tr:
+            row = _evaluate_item(model, it, judge_model)
+            if tr is not None:
+                row["trace_id"] = tr.trace_id
+        if "error" in row or "judge_error" in row:
             n_errors += 1
-            print(f"    x {it.id}: answer failed: {exc}", file=sys.stderr)
-            detail.append({"id": it.id, "question": it.question, "error": str(exc)})
-            continue
-
-        did_answer = not ans.abstained
-        decisions.append((it.answerable, did_answer))
-        if ans.latency_s:
-            latencies.append(ans.latency_s)
-        if ans.cost_usd is None:
-            # Unknown price (e.g. local model). Treat as zero but flag.
-            if parse_model(model)[0] != "ollama":
-                cost_known = False
-        else:
-            total_cost += ans.cost_usd
-
-        row = {
-            "id": it.id,
-            "question": it.question,
-            "answerable": it.answerable,
-            "abstained": ans.abstained,
-            "answer": ans.answer,
-            "best_dense_sim": ans.best_dense_sim,
-            "citations": [c["label"] for c in ans.citations],
-        }
-
-        if did_answer:
-            n_answered += 1
-            try:
-                j = judge_answer(
-                    question=it.question,
-                    answer=ans.answer,
-                    citations=ans.citations,
-                    abstained=False,
-                    gold_answer=it.gold_answer,
-                    model=judge_model,
-                )
-            except Exception as exc:  # noqa: BLE001 — skip metrics for this item
-                n_errors += 1
-                print(f"    x {it.id}: judge failed: {exc}", file=sys.stderr)
-                row["judge_error"] = str(exc)
-                detail.append(row)
-                continue
-            row["judge"] = j.to_json()
-            if j.error:
-                print(f"    ! {it.id}: {j.error}", file=sys.stderr)
-            # Correctness only counts where we have a gold answer to compare to.
-            if it.gold_answer and j.correct is not None:
-                correctness_labels.append(bool(j.correct))
-            citation_scores.append(citation_accuracy(j.citation_supports))
-            hallucination_scores.append(hallucination_rate(j.claim_supports))
+        if "error" not in row and row.get("cost_usd") is None and parse_model(model)[0] != "ollama":
+            cost_known = False  # unknown price for a hosted model: don't report $0
         detail.append(row)
 
     if n_errors:
@@ -153,26 +150,69 @@ def evaluate_model(model: str, items, judge_model: str) -> dict:
         for row in detail:
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 
-    stats = refusal_calibration(decisions)
-    correctness = (
-        (sum(correctness_labels) / len(correctness_labels)) if correctness_labels else None
-    )
-    cost_per_100q = None
-    if cost_known:
-        cost_per_100q = (total_cost / len(items)) * 100 if items else 0.0
+    return summarize_rows(detail, model=model, judge=judge_model, cost_known=cost_known)
 
-    return {
-        "model": model,
-        "correctness": correctness,
-        "citation_accuracy": mean_ignoring_none(citation_scores),
-        "hallucination_rate": mean_ignoring_none(hallucination_scores),
-        "refusal_calibration": stats.calibration,
-        "avg_latency_s": (sum(latencies) / len(latencies)) if latencies else None,
-        "cost_per_100q": cost_per_100q,
-        "n_questions": len(items),
-        "n_answered": n_answered,
-        "judge": judge_model,
+
+def _evaluate_item(model: str, it, judge_model: str) -> dict:
+    """Answer + judge one question; returns its run row (errors recorded, not raised)."""
+    # A single flaky/slow local inference must not abort the whole benchmark.
+    try:
+        ans = answer_question(it.question, model=model)
+    except Exception as exc:  # noqa: BLE001 — record and skip the item
+        print(f"    x {it.id}: answer failed: {exc}", file=sys.stderr)
+        tracing.record_error(exc)
+        return {"id": it.id, "question": it.question, "error": str(exc)}
+    tracing.record_answer(ans)
+
+    retrieved_labels = [r["label"] for r in ans.retrieved]
+    row = {
+        "id": it.id,
+        "question": it.question,
+        "answerable": it.answerable,
+        "has_gold": bool(it.gold_answer),
+        "abstained": ans.abstained,
+        "answer": ans.answer,
+        "best_dense_sim": ans.best_dense_sim,
+        "citations": [c["label"] for c in ans.citations],
+        "retrieved_labels": retrieved_labels,
+        "citation_coverage": (
+            None if ans.abstained else response_citation_coverage(ans.answer, set(retrieved_labels))
+        ),
+        "latency_s": ans.latency_s,
+        "cost_usd": ans.cost_usd,
+        "prompt_tokens": ans.prompt_tokens,
+        "completion_tokens": ans.completion_tokens,
+        "cached": ans.cached,
     }
+    if ans.abstained:
+        return row
+
+    try:
+        with tracing.span("judge"):
+            j = judge_answer(
+                question=it.question,
+                answer=ans.answer,
+                citations=ans.citations,
+                abstained=False,
+                gold_answer=it.gold_answer,
+                model=judge_model,
+            )
+    except Exception as exc:  # noqa: BLE001 — skip metrics for this item
+        print(f"    x {it.id}: judge failed: {exc}", file=sys.stderr)
+        tracing.annotate(judge_error=str(exc)[:500])
+        row["judge_error"] = str(exc)
+        return row
+    row["judge"] = j.to_json()
+    if j.error:
+        print(f"    ! {it.id}: {j.error}", file=sys.stderr)
+    tracing.annotate(
+        judge_correct=j.correct,
+        judge_unsupported=is_unsupported(j.claim_supports),
+        judge_citation_accuracy=citation_accuracy(j.citation_supports),
+        judge_hallucination_rate=hallucination_rate(j.claim_supports),
+        judge_parse_error=j.error,
+    )
+    return row
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -206,6 +246,8 @@ def main(argv: list[str] | None = None) -> int:
         judge_model = fallback
     print(f"Judge model: {judge_model}\n")
 
+    run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:6]
+    print(f"Run id: {run_id} (traces -> {tracing.trace_dir()})")
     rows = []
     for model in models:
         provider = parse_model(model)[0]
@@ -213,35 +255,24 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[skip] {model}: provider unavailable")
             continue
         print(f"[run] {model} ...")
-        rows.append(evaluate_model(model, items, judge_model))
+        rows.append(evaluate_model(model, items, judge_model, run_id=run_id))
         r = rows[-1]
         print(
             f"       correctness={_fmt(r['correctness'])} "
             f"citation_acc={_fmt(r['citation_accuracy'])} "
             f"halluc={_fmt(r['hallucination_rate'])} "
-            f"refusal_cal={_fmt(r['refusal_calibration'])}"
+            f"refusal_cal={_fmt(r['refusal_calibration'])}\n"
+            f"       citation_cov={_fmt(r['citation_coverage'])} "
+            f"failure={_fmt(r['failure_rate'])} "
+            f"p50={_fmt(r['latency_p50_s'], 2)}s p95={_fmt(r['latency_p95_s'], 2)}s"
         )
 
     out = CONFIG.paths.results / "results.csv"
 
-    def _row_strs(r: dict) -> list[str]:
-        return [
-            r["model"],
-            _fmt(r["correctness"]),
-            _fmt(r["citation_accuracy"]),
-            _fmt(r["hallucination_rate"]),
-            _fmt(r["refusal_calibration"]),
-            _fmt(r["avg_latency_s"], 2),
-            _fmt(r["cost_per_100q"], 4),
-            str(r["n_questions"]),
-            str(r["n_answered"]),
-            r["judge"],
-        ]
-
     # Merge with the committed leaderboard: rows for models evaluated in this
     # run are replaced in place; everyone else's rows are preserved, so a
     # single-model community contribution never wipes the table.
-    new_rows = {r["model"]: _row_strs(r) for r in rows}
+    new_rows = {r["model"]: row_strs(r) for r in rows}
     merged: list[list[str]] = []
     if out.exists():
         with open(out, encoding="utf-8") as fh:
