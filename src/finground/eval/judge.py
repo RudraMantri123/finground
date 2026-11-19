@@ -22,39 +22,12 @@ from dataclasses import dataclass, field
 
 from ..config import CONFIG
 from ..llm import LLMClient
+from ..prompts import judge_prompt
 
-JUDGE_SYSTEM = (
-    "You are a strict, literal evaluation judge for a financial question-answering "
-    "system. You assess whether an answer is grounded in the excerpts it cites and "
-    "whether it matches a reference answer. You never use outside knowledge; an "
-    "excerpt 'supports' a claim only if the claim can be verified from the excerpt "
-    "text alone. Respond with a single JSON object and nothing else."
-)
-
-_JUDGE_TEMPLATE = """\
-Question:
-{question}
-
-{gold_block}Candidate answer:
-{answer}
-
-Cited excerpts (only these may support the answer):
-{excerpts}
-
-Do the following and return ONE JSON object:
-1. "claims": break the candidate answer into a list of atomic factual claims.
-   For each, set "supported" true iff the claim is verifiable from AT LEAST ONE
-   cited excerpt above. Ignore hedging/meta sentences.
-2. "citations": for each cited excerpt label, set "supports" true iff that
-   excerpt genuinely supports at least one claim in the answer.
-3. "correct": {correct_instruction}
-
-JSON schema:
-{{"claims": [{{"claim": "...", "supported": true}}],
-  "citations": [{{"label": "C1", "supports": true}}],
-  "correct": true,
-  "reason": "one short sentence"}}
-"""
+# The prompt text lives in prompts/judge.<version>.toml (see ..prompts).
+# Module attributes kept for importers; they reflect the import-time version.
+JUDGE_SYSTEM = judge_prompt().system
+_JUDGE_TEMPLATE = judge_prompt().user
 
 
 @dataclass
@@ -65,6 +38,7 @@ class Judgment:
     citations: list[dict] = field(default_factory=list)  # {label, supports}
     judged: bool = True  # False when skipped (e.g. refusal)
     error: str | None = None
+    prompt_version: str = ""  # e.g. "judge.v1"; empty when not judged
 
     # convenience views used by the metrics layer
     @property
@@ -83,6 +57,7 @@ class Judgment:
             "citations": self.citations,
             "judged": self.judged,
             "error": self.error,
+            "prompt_version": self.prompt_version,
         }
 
 
@@ -142,7 +117,8 @@ def judge_answer(
             "supported by the cited excerpts (self-consistent grounding)."
         )
 
-    prompt = _JUDGE_TEMPLATE.format(
+    template = judge_prompt()
+    prompt = template.user.format(
         question=question,
         gold_block=gold_block,
         answer=answer,
@@ -151,12 +127,16 @@ def judge_answer(
     )
 
     client = LLMClient(model, temperature=0.0, use_cache=use_cache)
-    resp = client.complete(JUDGE_SYSTEM, prompt, max_tokens=1200)
+    resp = client.complete(template.system, prompt, max_tokens=1200)
     try:
         data = _extract_json(resp.text)
     except Exception as exc:  # noqa: BLE001 — surface parse failure, don't crash the run
         return Judgment(
-            correct=None, judged=True, error=f"judge parse error: {exc}", reason=resp.text[:200]
+            correct=None,
+            judged=True,
+            error=f"judge parse error: {exc}",
+            reason=resp.text[:200],
+            prompt_version=template.id,
         )
 
     return Judgment(
@@ -165,4 +145,5 @@ def judge_answer(
         claims=list(data.get("claims", [])),
         citations=list(data.get("citations", [])),
         judged=True,
+        prompt_version=template.id,
     )

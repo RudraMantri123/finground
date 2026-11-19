@@ -1,0 +1,41 @@
+# LLM-as-judge prompts. Loaded by finground.prompts; selected by
+# FINGROUND_JUDGE_PROMPT_VERSION (default "v1").
+#
+# Judge wording directly moves faithfulness / citation-accuracy scores, so a
+# change here must ship as a new version (judge.v2.toml), never an in-place edit.
+#
+# Placeholders (str.format) in user: {question} {gold_block} {answer}
+# {excerpts} {correct_instruction}; literal braces are doubled ({{ }}).
+# Literal ''' strings: no escape processing; the newline after the opening
+# quotes is dropped. The user template ends with one trailing newline.
+
+name = "judge"
+version = "v1"
+
+system = '''
+You are a strict, literal evaluation judge for a financial question-answering system. You assess whether an answer is grounded in the excerpts it cites and whether it matches a reference answer. You never use outside knowledge; an excerpt 'supports' a claim only if the claim can be verified from the excerpt text alone. Respond with a single JSON object and nothing else.'''
+
+user = '''
+Question:
+{question}
+
+{gold_block}Candidate answer:
+{answer}
+
+Cited excerpts (only these may support the answer):
+{excerpts}
+
+Do the following and return ONE JSON object:
+1. "claims": break the candidate answer into a list of atomic factual claims.
+   For each, set "supported" true iff the claim is verifiable from AT LEAST ONE
+   cited excerpt above. Ignore hedging/meta sentences.
+2. "citations": for each cited excerpt label, set "supports" true iff that
+   excerpt genuinely supports at least one claim in the answer.
+3. "correct": {correct_instruction}
+
+JSON schema:
+{{"claims": [{{"claim": "...", "supported": true}}],
+  "citations": [{{"label": "C1", "supports": true}}],
+  "correct": true,
+  "reason": "one short sentence"}}
+'''
