@@ -114,6 +114,8 @@ def evaluate_model(model: str, items, judge_model: str) -> dict:
             "best_dense_sim": ans.best_dense_sim,
             "citations": [c["label"] for c in ans.citations],
         }
+        # Prompt provenance (the judge's version is recorded inside row["judge"]).
+        row["prompt_version"] = ans.prompt_version
 
         if did_answer:
             n_answered += 1
