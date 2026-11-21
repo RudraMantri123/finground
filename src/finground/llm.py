@@ -2,9 +2,12 @@
 
 Swapping models is a config change, not a code change: models are named
 ``provider:model`` (e.g. ``openai:gpt-4o-mini``, ``anthropic:claude-sonnet-5``,
-``cohere:command-a-03-2025``, ``ollama:llama3.1``). Keys are read from the
-environment; a provider with no key is simply reported as unavailable so the
-benchmark can skip it.
+``cohere:command-a-03-2025``, ``mistral:mistral-small-latest``,
+``groq:llama-3.3-70b-versatile``, ``ollama:llama3.1``). Only the first colon
+separates provider from model, so model ids may themselves contain ``/`` or
+``:`` (``openrouter:meta-llama/llama-3.3-70b-instruct:free``). Keys are read
+from the environment; a provider with no key is simply reported as unavailable
+so the benchmark can skip it.
 
 Responses are cached on disk keyed by (provider, model, system, user, temp) so
 re-running the benchmark does not re-bill the API.
@@ -39,7 +42,38 @@ PRICING: dict[str, tuple[float, float]] = {
     "command-r-08-2024": (0.15, 0.60),
     "command-r7b-12-2024": (0.0375, 0.15),
     # local models cost nothing per token
+    # Models served via the OpenAI-compatible providers below (mistral, gemini,
+    # groq, ...) are deliberately unpriced until a verified list price is added:
+    # cost is then reported as unknown rather than guessed.
 }
+
+# Hosted providers that speak the OpenAI chat-completions wire format and differ
+# only in endpoint and key variable. Adding one is a single line here.
+OPENAI_COMPATIBLE: dict[str, tuple[str, str]] = {
+    # provider: (chat completions URL, API key env var)
+    "mistral": ("https://api.mistral.ai/v1/chat/completions", "MISTRAL_API_KEY"),
+    "gemini": (
+        "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+        "GEMINI_API_KEY",
+    ),
+    "groq": ("https://api.groq.com/openai/v1/chat/completions", "GROQ_API_KEY"),
+    "cerebras": ("https://api.cerebras.ai/v1/chat/completions", "CEREBRAS_API_KEY"),
+    "openrouter": ("https://openrouter.ai/api/v1/chat/completions", "OPENROUTER_API_KEY"),
+    "github": ("https://models.github.ai/inference/chat/completions", "GITHUB_TOKEN"),
+}
+
+# Keyed REST providers: provider -> env var holding its key.
+_KEY_ENV: dict[str, str] = {
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "cohere": "COHERE_API_KEY",
+    **{name: env for name, (_url, env) in OPENAI_COMPATIBLE.items()},
+}
+
+# Hosted-request robustness knobs (shared by every requests-based adapter).
+HTTP_TIMEOUT_S = 300
+HTTP_ATTEMPTS = 6
+_RETRY_STATUS = {429, 500, 502, 503, 504}
 
 
 class LLMUnavailable(RuntimeError):
@@ -80,13 +114,7 @@ def estimate_cost(spec: str, prompt_tokens: int, completion_tokens: int) -> floa
 
 def available_providers() -> set[str]:
     """Providers usable right now (key present, or Ollama reachable)."""
-    available: set[str] = set()
-    if os.environ.get("OPENAI_API_KEY"):
-        available.add("openai")
-    if os.environ.get("ANTHROPIC_API_KEY"):
-        available.add("anthropic")
-    if os.environ.get("COHERE_API_KEY"):
-        available.add("cohere")
+    available = {provider for provider, env in _KEY_ENV.items() if os.environ.get(env)}
     try:
         requests.get(f"{CONFIG.ollama_base_url}/api/tags", timeout=1.5)
         available.add("ollama")
@@ -128,6 +156,77 @@ def ollama_num_ctx() -> int:
 def _cache_path(key: str):
     CONFIG.paths.ensure()
     return CONFIG.paths.llm_cache / f"{key}.json"
+
+
+# ---------------------------------------------------------------------------
+# Shared HTTP for hosted providers
+# ---------------------------------------------------------------------------
+
+
+def _retry_after(resp: Any, attempt: int) -> float:
+    """Seconds to wait: the server's Retry-After (seconds form) or linear backoff."""
+    try:
+        wait = float(resp.headers.get("Retry-After", 0))
+    except (TypeError, ValueError):  # HTTP-date form or junk -> our own backoff
+        wait = 0.0
+    return min(wait, 120.0) if wait > 0 else 15.0 * attempt
+
+
+def _scrub(text: str, key: str) -> str:
+    """Remove the API key from text bound for logs or exception messages."""
+    return text.replace(key, "***") if key else text
+
+
+def _post_json(provider: str, url: str, key: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """POST with Bearer auth, timeouts, and backoff on 429/5xx/network errors.
+
+    The key goes only in the Authorization header; it never appears in printed
+    messages or raised exceptions (error bodies are scrubbed, and exceptions
+    are raised ``from None`` so the request object is not chained along).
+    """
+    last = "no response"
+    for attempt in range(1, HTTP_ATTEMPTS + 1):
+        try:
+            resp = requests.post(
+                url,
+                headers={"Authorization": f"Bearer {key}"},
+                json=payload,
+                timeout=HTTP_TIMEOUT_S,
+            )
+        except requests.RequestException as exc:
+            last = exc.__class__.__name__
+            if attempt < HTTP_ATTEMPTS:
+                wait = 15.0 * attempt
+                print(
+                    f"[llm] {provider} request failed ({last}, attempt "
+                    f"{attempt}/{HTTP_ATTEMPTS}); retrying in {wait:.0f}s"
+                )
+                time.sleep(wait)
+                continue
+            break
+        status = resp.status_code
+        if status in _RETRY_STATUS:
+            last = f"HTTP {status}"
+            if attempt < HTTP_ATTEMPTS:
+                wait = _retry_after(resp, attempt)
+                print(
+                    f"[llm] {provider} returned {status} (attempt "
+                    f"{attempt}/{HTTP_ATTEMPTS}); retrying in {wait:.0f}s"
+                )
+                time.sleep(wait)
+                continue
+            break
+        if status >= 400:
+            body = _scrub(str(getattr(resp, "text", "") or "")[:300], key)
+            msg = f"{provider} request failed: HTTP {status}: {body}".rstrip(": ")
+            if status in (401, 403):
+                raise LLMUnavailable(msg) from None
+            raise RuntimeError(msg) from None
+        try:
+            return resp.json()
+        except ValueError:
+            raise RuntimeError(f"{provider} returned non-JSON response") from None
+    raise LLMUnavailable(f"{provider} unavailable after {HTTP_ATTEMPTS} attempts ({last})")
 
 
 # ---------------------------------------------------------------------------
@@ -227,6 +326,8 @@ class LLMClient:
             return self._ollama(system, user, max_tokens)
         if self.provider == "cohere":
             return self._cohere(system, user, max_tokens)
+        if self.provider in OPENAI_COMPATIBLE:
+            return self._openai_compatible(system, user, max_tokens)
         raise LLMUnavailable(f"Unknown provider {self.provider!r}")
 
     def _openai(self, system: str, user: str, max_tokens: int) -> tuple[str, int, int]:
@@ -278,33 +379,40 @@ class LLMClient:
                 {"role": "user", "content": user},
             ],
         }
-        # Trial keys are rate-limited per minute; back off on 429 instead of
-        # failing the item. Answers are disk-cached, so a stopped run resumes.
-        attempts = 6
-        for attempt in range(1, attempts + 1):
-            resp = requests.post(
-                "https://api.cohere.com/v2/chat",
-                headers={"Authorization": f"Bearer {key}"},
-                json=payload,
-                timeout=300,
-            )
-            if resp.status_code == 429 and attempt < attempts:
-                wait = int(resp.headers.get("Retry-After", 0)) or 15 * attempt
-                print(
-                    f"[llm] cohere rate-limited (attempt {attempt}/{attempts}); retrying in {wait}s"
-                )
-                time.sleep(wait)
-                continue
-            resp.raise_for_status()
-            data = resp.json()
-            text = "".join(
-                part.get("text", "")
-                for part in data.get("message", {}).get("content", [])
-                if part.get("type") == "text"
-            )
-            tokens = data.get("usage", {}).get("tokens", {})
-            return text, tokens.get("input_tokens", 0), tokens.get("output_tokens", 0)
-        raise LLMUnavailable("Cohere rate limit not cleared after retries")
+        # Trial keys are rate-limited per minute; _post_json backs off on 429
+        # instead of failing the item. Answers are disk-cached, so a stopped
+        # run resumes.
+        data = _post_json("cohere", "https://api.cohere.com/v2/chat", key, payload)
+        text = "".join(
+            part.get("text", "")
+            for part in data.get("message", {}).get("content", [])
+            if part.get("type") == "text"
+        )
+        tokens = data.get("usage", {}).get("tokens", {})
+        return text, tokens.get("input_tokens", 0), tokens.get("output_tokens", 0)
+
+    def _openai_compatible(self, system: str, user: str, max_tokens: int) -> tuple[str, int, int]:
+        """Any provider in OPENAI_COMPATIBLE (mistral, gemini, groq, ...)."""
+        url, env = OPENAI_COMPATIBLE[self.provider]
+        key = os.environ.get(env)
+        if not key:
+            raise LLMUnavailable(f"{env} not set")
+        payload = {
+            "model": self.model,
+            "temperature": self.temperature,
+            "max_tokens": max_tokens,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        }
+        data = _post_json(self.provider, url, key, payload)
+        choices = data.get("choices") or [{}]
+        content = (choices[0].get("message") or {}).get("content") or ""
+        if isinstance(content, list):  # some providers return content parts
+            content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
+        usage = data.get("usage") or {}
+        return content, usage.get("prompt_tokens") or 0, usage.get("completion_tokens") or 0
 
     def _ollama(self, system: str, user: str, max_tokens: int) -> tuple[str, int, int]:
         url = f"{CONFIG.ollama_base_url}/api/chat"
