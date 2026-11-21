@@ -249,6 +249,35 @@ use and falls back to RRF order offline. LLM responses are cached on disk
 (`llm_cache/`) so re-runs don't re-bill; generation options are part of the cache
 key, so changing them re-generates instead of serving stale outputs.
 
+### Hosted models
+
+Model specs are `provider:model`; only the first colon is the separator, so model ids
+may contain `/` or `:`. Each provider is enabled by its key in `.env` (see
+`.env.example` for signup links); providers without a key are skipped. Besides
+`openai`, `cohere` and the other existing adapters, these are supported:
+
+| Provider | Key variable | Example spec |
+|---|---|---|
+| `mistral` | `MISTRAL_API_KEY` | `mistral:mistral-small-latest` |
+| `gemini` | `GEMINI_API_KEY` | `gemini:gemini-2.5-flash` |
+| `groq` | `GROQ_API_KEY` | `groq:llama-3.3-70b-versatile` |
+| `cerebras` | `CEREBRAS_API_KEY` | `cerebras:llama-3.3-70b` |
+| `openrouter` | `OPENROUTER_API_KEY` | `openrouter:meta-llama/llama-3.3-70b-instruct:free` |
+| `github` (GitHub Models) | `GITHUB_TOKEN` | `github:openai/gpt-4.1-mini` |
+
+```bash
+.venv/bin/python scripts/run_benchmark.py --models groq:llama-3.3-70b-versatile \
+    --judge gemini:gemini-2.5-flash --limit 20
+```
+
+All six share one OpenAI-compatible adapter (`OPENAI_COMPATIBLE` in
+`src/finground/llm.py`; adding a provider is one line). Hosted calls retry on
+429/5xx with backoff (honouring `Retry-After`), time out, and never include the key
+in logs or errors. Free tiers are rate-limited, so long runs may pause; cached
+answers make a stopped run resume. Models without a verified price in `PRICING`
+report cost as unknown. Free-tier model availability changes; check the provider's
+model list if a spec 404s.
+
 ## Observability
 
 Aggregate scores say *that* quality moved; traces say *where*. Every `POST /query`
