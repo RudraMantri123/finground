@@ -22,6 +22,8 @@ data/
 indexes/
 .cache/
 llm_cache/
+# Request traces (append-only JSONL + generated dashboard); may contain user questions.
+traces/
 
 # Results: commit everything derived (results.csv, charts, gold_set.jsonl,
 # human labels, judge_validation.json) INCLUDING per-run dumps in

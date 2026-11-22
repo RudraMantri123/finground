@@ -22,3 +22,47 @@ jobs:
         run: black --check src scripts tests
       - name: Tests
         run: pytest -q
+
+  # Retrieval regression gate. CI has no data/ or indexes/ (gitignored), so this
+  # measures retrieval on the committed fixture corpus (tests/fixtures/), indexed
+  # in memory, against thresholds calibrated on that same fixture. No LLM calls.
+  retrieval-eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      TOKENIZERS_PARALLELISM: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install (CPU-only torch keeps the install small and fast)
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e .
+      - name: Cache Hugging Face models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ runner.os }}-bge-base-en-v1.5-ms-marco-MiniLM-L-6-v2-v1
+      - name: Fetch models (no-op when cached)
+        run: >
+          python -c "from sentence_transformers import SentenceTransformer, CrossEncoder;
+          SentenceTransformer('BAAI/bge-base-en-v1.5');
+          CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')"
+      - name: Retrieval eval with threshold check
+        env:
+          HF_HUB_OFFLINE: "1"
+        run: >
+          python scripts/eval_retrieval.py
+          --check results/retrieval_thresholds.json
+          --out-dir "${{ runner.temp }}/retrieval-eval"
+      - name: Upload per-question audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: retrieval-eval
+          path: ${{ runner.temp }}/retrieval-eval/
+          if-no-files-found: ignore

@@ -12,24 +12,18 @@ from __future__ import annotations
 import re
 from dataclasses import asdict, dataclass, field
 
+from . import tracing
 from .config import CONFIG
 from .llm import LLMClient, LLMResponse
+from .prompts import answer_prompt
 from .retrieve import RetrievedChunk, best_dense_sim, retrieve
 
 REFUSAL = "Not answerable from the provided filings."
 
-SYSTEM_PROMPT = (
-    "You are a meticulous financial analyst assistant. You answer questions about "
-    "SEC filings using ONLY the provided excerpts.\n\n"
-    "Rules:\n"
-    "1. Use only information contained in the excerpts. Never use outside knowledge.\n"
-    "2. Support every factual claim with an inline citation to the excerpt(s) that "
-    "back it, using bracket labels like [C1] or [C2, C3].\n"
-    "3. If the excerpts do not contain enough information to answer the question, "
-    f"respond with exactly this sentence and nothing else: {REFUSAL}\n"
-    "4. Prefer abstaining over guessing. Do not speculate.\n"
-    "5. Be concise and precise; quote figures exactly as written in the excerpts."
-)
+# The prompt text lives in prompts/answer.<version>.toml (see prompts.py).
+# Kept as a module attribute for callers that import it; it reflects the
+# version active at import time.
+SYSTEM_PROMPT = answer_prompt().system.format(refusal=REFUSAL)
 
 _CITATION_RE = re.compile(r"\[([^\]]*?C\d+[^\]]*?)\]")
 _LABEL_RE = re.compile(r"C(\d+)")
@@ -71,6 +65,7 @@ class Answer:
     latency_s: float = 0.0
     cost_usd: float | None = None
     cached: bool = False
+    prompt_version: str = ""  # e.g. "answer.v1"; empty when gated before prompting
     meta: dict = field(default_factory=dict)
 
     def to_json(self) -> dict:
@@ -128,10 +123,19 @@ def answer_question(
         }
         for r in retrieved
     ]
+    t_gate = tracing.now()
     evidence = best_dense_sim(retrieved)
+    gated = not retrieved or evidence < CONFIG.retrieval.min_dense_sim
+    tracing.record_span(
+        "evidence_gate",
+        t_gate,
+        best_dense_sim=evidence,
+        threshold=CONFIG.retrieval.min_dense_sim,
+        passed=not gated,
+    )
 
     # Hard evidence gate: too weak to answer -> abstain without spending tokens.
-    if not retrieved or evidence < CONFIG.retrieval.min_dense_sim:
+    if gated:
         return Answer(
             question=question,
             answer=REFUSAL,
@@ -146,17 +150,12 @@ def answer_question(
     # Excerpts first, question and rules last: models (small ones especially)
     # attend most to the end of the prompt, and a long excerpt block placed
     # after the question tends to bury it.
-    user_prompt = (
-        f"Excerpts from SEC filings:\n\n{_format_excerpts(retrieved)}\n\n"
-        f"---\n"
-        f"Question: {question}\n\n"
-        f"Answer the question using ONLY the excerpts above. Cite the excerpt(s) "
-        f"supporting each claim inline with their bracket labels, e.g. [C1] or "
-        f"[C2, C3]. If the excerpts do not contain the answer, reply exactly: "
-        f"{REFUSAL}"
+    prompt = answer_prompt()
+    user_prompt = prompt.user.format(
+        excerpts=_format_excerpts(retrieved), question=question, refusal=REFUSAL
     )
     client = LLMClient(model, temperature=temperature, use_cache=use_cache)
-    resp: LLMResponse = client.complete(SYSTEM_PROMPT, user_prompt)
+    resp: LLMResponse = client.complete(prompt.system.format(refusal=REFUSAL), user_prompt)
 
     # Small models sometimes append the refusal template after a complete,
     # cited answer (echoing the prompt's last instruction). Strip that dangling
@@ -193,4 +192,5 @@ def answer_question(
         latency_s=resp.latency_s,
         cost_usd=resp.cost_usd,
         cached=resp.cached,
+        prompt_version=prompt.id,
     )

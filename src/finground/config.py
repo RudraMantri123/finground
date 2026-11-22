@@ -38,6 +38,7 @@ class Paths:
     results: Path = _REPO_ROOT / "results"
     human_labels: Path = _REPO_ROOT / "results" / "human_labels"
     llm_cache: Path = _REPO_ROOT / "llm_cache"
+    prompts: Path = _REPO_ROOT / "prompts"
 
     def ensure(self) -> None:
         """Create directories that are safe to create on demand."""
@@ -64,11 +65,27 @@ class Models:
 
 
 @dataclass(frozen=True)
+class Prompts:
+    """Active prompt versions (files under ``prompts/``).
+
+    Pinned by default so results stay comparable; a new prompt is opted into
+    explicitly and its version is recorded with every benchmark row.
+    """
+
+    answer_version: str = field(
+        default_factory=lambda: _env("FINGROUND_ANSWER_PROMPT_VERSION", "v1")
+    )
+    judge_version: str = field(default_factory=lambda: _env("FINGROUND_JUDGE_PROMPT_VERSION", "v1"))
+
+
+@dataclass(frozen=True)
 class Retrieval:
     """Chunking + retrieval hyperparameters."""
 
     chunk_tokens: int = 500
-    chunk_overlap_tokens: int = 75
+    # ~20% overlap: the common production recommendation for 500-800 token
+    # chunks, so a fact straddling a window edge is whole in at least one chunk.
+    chunk_overlap_tokens: int = 100
     top_k: int = 8
     candidate_pool: int = 50  # per-ranker depth fused by RRF
     rrf_k: int = 60  # RRF smoothing constant
@@ -89,6 +106,7 @@ class Config:
     paths: Paths = field(default_factory=Paths)
     models: Models = field(default_factory=Models)
     retrieval: Retrieval = field(default_factory=Retrieval)
+    prompts: Prompts = field(default_factory=Prompts)
 
     @property
     def sec_user_agent(self) -> str:

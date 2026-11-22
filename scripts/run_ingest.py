@@ -4,6 +4,11 @@
 Usage:
     python scripts/run_ingest.py                 # all curated companies
     python scripts/run_ingest.py AAPL MSFT       # a subset by ticker
+    python scripts/run_ingest.py --pin           # same filings as current chunks
+
+Raw filings are cached in data/filings, so re-parsing never re-downloads.
+``--pin`` re-uses the exact accessions behind the existing data/chunks.jsonl
+instead of "latest", which would drift as companies file new 10-Ks.
 """
 
 from __future__ import annotations
@@ -11,10 +16,12 @@ from __future__ import annotations
 import sys
 
 from finground.config import CONFIG
-from finground.ingest import COMPANIES, ingest_all, write_chunks
+from finground.ingest import COMPANIES, ingest_all, pinned_accessions, write_chunks
 
 
 def main(argv: list[str]) -> int:
+    pin = "--pin" in argv
+    argv = [a for a in argv if a != "--pin"]
     tickers = {t.upper() for t in argv}
     companies = [c for c in COMPANIES if not tickers or c.ticker in tickers]
     if not companies:
@@ -25,7 +32,14 @@ def main(argv: list[str]) -> int:
 
     print(f"Ingesting {len(companies)} companies from SEC EDGAR...")
     print(f"  User-Agent: {CONFIG.sec_user_agent}")
-    chunks = ingest_all(companies)
+    accessions = None
+    if pin:
+        if not CONFIG.paths.chunks.exists():
+            print(f"--pin needs an existing {CONFIG.paths.chunks}")
+            return 1
+        accessions = pinned_accessions()
+        print(f"  Pinned accessions: {accessions}")
+    chunks = ingest_all(companies, accessions=accessions)
     if not chunks:
         print("No chunks produced. Check network / User-Agent.")
         return 1

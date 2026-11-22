@@ -1,5 +1,5 @@
-model,correctness,citation_accuracy,hallucination_rate,refusal_calibration,avg_latency_s,cost_per_100q,n_questions,n_answered,judge
-ollama:llama3,0.467,0.900,0.007,1.000,51.59,0.0000,20,15,ollama:llama3
-ollama:martain7r/finance-llama-8b:q4_k_m,0.214,0.415,0.512,0.567,149.71,0.0000,20,18,ollama:llama3
-ollama:0xroyce/plutus:latest,0.500,0.803,0.207,0.500,61.25,0.0000,20,20,ollama:llama3
-ollama:jjansen/adapt-finance-llama2-7b:latest,0.267,0.708,0.420,0.600,14.35,0.0000,20,19,ollama:llama3
+model,correctness,correctness_ci_lo,correctness_ci_hi,citation_accuracy,citation_accuracy_ci_lo,citation_accuracy_ci_hi,hallucination_rate,hallucination_rate_ci_lo,hallucination_rate_ci_hi,refusal_calibration,refusal_calibration_ci_lo,refusal_calibration_ci_hi,citation_coverage,failure_rate,latency_p50_s,latency_p95_s,avg_latency_s,cost_per_request,cost_per_100q,n_questions,n_answered,judge
+ollama:llama3,0.467,0.214,0.714,0.900,0.786,1.000,0.007,0.000,0.024,1.000,1.000,1.000,0.467,0.050,50.28,67.78,51.59,0.000000,0.0000,20,15,ollama:llama3
+ollama:martain7r/finance-llama-8b:q4_k_m,0.214,0.000,0.438,0.415,0.231,0.598,0.512,0.317,0.714,0.567,0.417,0.767,0.000,0.600,107.15,246.99,149.71,0.000000,0.0000,20,18,ollama:llama3
+ollama:0xroyce/plutus:latest,0.500,0.250,0.769,0.803,0.643,0.930,0.207,0.069,0.380,0.500,0.500,0.500,0.050,0.300,57.90,120.59,61.25,0.000000,0.0000,20,20,ollama:llama3
+ollama:jjansen/adapt-finance-llama2-7b:latest,0.267,0.062,0.471,0.708,0.506,0.873,0.420,0.227,0.605,0.600,0.500,0.833,0.684,0.600,12.50,30.39,14.35,0.000000,0.0000,20,19,ollama:llama3

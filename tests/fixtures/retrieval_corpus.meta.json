@@ -1,0 +1,13 @@
+{
+  "source_chunks": 2138,
+  "source_chunks_sha256": "d8e4312ce1dd8f106491bf276b294912d8a95c9cb4d94ad3f5d814aac3ce79db",
+  "fixture_chunks": 624,
+  "positives": 48,
+  "hard_negative_pool": 442,
+  "background_only": 134,
+  "params": {
+    "hard_k": 30,
+    "per_ticker": 25,
+    "seed": 0
+  }
+}

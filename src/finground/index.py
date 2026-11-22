@@ -68,11 +68,22 @@ def embed_queries(texts: list[str], *, model_name: str | None = None) -> np.ndar
 # ---------------------------------------------------------------------------
 
 
+def make_bm25(chunks: list[dict]) -> BM25Okapi:
+    """In-memory BM25 over chunk texts (shared by the on-disk build and eval fixtures)."""
+    return BM25Okapi([tokenize(c["text"]) for c in chunks])
+
+
+def make_faiss(vecs: np.ndarray) -> faiss.Index:
+    """Exact inner-product index; on normalized vectors that is cosine similarity."""
+    faiss_index = faiss.IndexFlatIP(vecs.shape[1])
+    faiss_index.add(vecs)
+    return faiss_index
+
+
 def build_bm25(chunks: list[dict], path: Path | None = None) -> None:
     """Build and persist the BM25 index alongside its row-aligned chunks."""
     path = path or CONFIG.paths.bm25_index
-    tokenized = [tokenize(c["text"]) for c in chunks]
-    bm25 = BM25Okapi(tokenized)
+    bm25 = make_bm25(chunks)
     with open(path, "wb") as fh:
         pickle.dump({"bm25": bm25, "chunks": chunks}, fh)
 
@@ -83,9 +94,7 @@ def build_dense(chunks: list[dict], *, model_name: str | None = None) -> None:
     texts = [c["text"] for c in chunks]
     vecs = embed_passages(texts, model_name=model_name)
     dim = vecs.shape[1]
-    # Inner product on normalized vectors == cosine similarity.
-    faiss_index = faiss.IndexFlatIP(dim)
-    faiss_index.add(vecs)
+    faiss_index = make_faiss(vecs)
     faiss.write_index(faiss_index, str(CONFIG.paths.dense_index))
     meta = {"model": model_name, "dim": dim, "chunks": chunks}
     with open(CONFIG.paths.dense_meta, "w", encoding="utf-8") as fh:
