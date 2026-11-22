@@ -225,8 +225,7 @@ def main() -> int:
     n_correct = sum(1 for r in LABELS if r["human_correct"])
     n_faithful = sum(1 for r in LABELS if r["human_faithful"])
     print(
-        f"Wrote {len(LABELS)} human labels to {OUT} "
-        f"({n_correct} correct, {n_faithful} faithful)."
+        f"Wrote {len(LABELS)} human labels to {OUT} ({n_correct} correct, {n_faithful} faithful)."
     )
     return 0
 

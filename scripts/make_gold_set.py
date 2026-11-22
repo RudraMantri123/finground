@@ -16,7 +16,13 @@ then checked by reading every matching chunk. ``verified`` records that check;
 
 from __future__ import annotations
 
+import json
+from dataclasses import fields
+
+from finground.config import CONFIG
 from finground.eval.datasets import GoldItem, write_gold_set
+
+DRAFT_PATH = CONFIG.paths.results / "gold_set_draft.jsonl"
 
 ITEMS: list[GoldItem] = [
     # ---- answerable: risk factors ----
@@ -406,15 +412,45 @@ EVIDENCE: dict[str, list[dict]] = {
 }
 
 
+def approved_draft_items(path=DRAFT_PATH) -> list[GoldItem]:
+    """Draft rows a reviewer marked ``"status": "approved"``, minus review-only fields.
+
+    Drafts live in results/gold_set_draft.jsonl (validated by
+    scripts/check_gold_draft.py); flipping an item's status from "draft" to
+    "approved" is the human sign-off that promotes it into the gold set.
+    """
+    if not path.exists():
+        return []
+    known = {f.name for f in fields(GoldItem)}
+    items = []
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if row.get("status") == "approved":
+                items.append(GoldItem(**{k: v for k, v in row.items() if k in known}))
+    return items
+
+
 def main() -> int:
     for item in ITEMS:
         item.evidence = EVIDENCE.get(item.id, [])
-    missing = [i.id for i in ITEMS if i.answerable and not i.evidence]
+    promoted = approved_draft_items()
+    items = ITEMS + promoted
+    ids = [i.id for i in items]
+    dupes = sorted({i for i in ids if ids.count(i) > 1})
+    if dupes:
+        raise SystemExit(f"duplicate gold ids: {dupes}")
+    missing = [i.id for i in items if i.answerable and not i.evidence]
     if missing:
         raise SystemExit(f"answerable items without evidence labels: {missing}")
-    n = write_gold_set(ITEMS)
-    answerable = sum(1 for i in ITEMS if i.answerable)
-    print(f"Wrote {n} gold items ({answerable} answerable, {n - answerable} unanswerable).")
+    n = write_gold_set(items)
+    answerable = sum(1 for i in items if i.answerable)
+    print(
+        f"Wrote {n} gold items ({answerable} answerable, {n - answerable} unanswerable; "
+        f"{len(promoted)} promoted from the reviewed draft)."
+    )
     return 0
 
 

@@ -3,7 +3,9 @@
 
 ``results/gold_set_draft.jsonl`` holds candidate items that a person verifies
 before promotion into ``results/gold_set.jsonl``. They follow the gold-set
-schema plus two review fields, ``status`` ("draft") and ``difficulty``.
+schema plus two review fields, ``status`` ("draft", or "approved" once a person
+has checked it) and ``difficulty``. ``scripts/make_gold_set.py`` promotes the
+approved rows.
 
 This script:
 
@@ -39,6 +41,8 @@ from finground.eval.retrieval_metrics import EvidenceLabel
 
 DRAFT_PATH = CONFIG.paths.results / "gold_set_draft.jsonl"
 REVIEW_FIELDS = {"status", "difficulty"}
+# "draft" until a person has checked the item against the filing, then "approved".
+STATUSES = {"draft", "approved"}
 DIFFICULTIES = {"easy", "medium", "hard"}
 EXCERPT_CHARS = 300
 MAX_EXCERPTS_PER_LABEL = 2
@@ -75,11 +79,12 @@ def schema_problems(rows: list[dict], existing_ids: set[str]) -> list[str]:
             problems.append(f"{rid}: unknown fields {sorted(extra)}")
         if rid in seen:
             problems.append(f"{rid}: duplicate id")
-        if rid in existing_ids:
+        # Approved rows are expected in gold_set.jsonl once promoted.
+        if rid in existing_ids and row.get("status") != "approved":
             problems.append(f"{rid}: collides with an id in gold_set.jsonl")
         seen.add(rid)
-        if row.get("status") != "draft":
-            problems.append(f"{rid}: status must be 'draft'")
+        if row.get("status") not in STATUSES:
+            problems.append(f"{rid}: status must be one of {sorted(STATUSES)}")
         if row.get("difficulty") not in DIFFICULTIES:
             problems.append(f"{rid}: difficulty must be one of {sorted(DIFFICULTIES)}")
         try:
@@ -156,6 +161,12 @@ def write_review(rows: list[dict], corpus: list[dict], path: Path) -> None:
         "the right period/column; computed items' arithmetic in Notes is right; trap notes show "
         "the filing really cannot answer. Mark OK / FIX in the box.",
         "",
+        'To promote: set `"status": "approved"` on each OK row in '
+        "`results/gold_set_draft.jsonl` (fix or delete FIX rows), then run "
+        "`python scripts/check_gold_draft.py`, `python scripts/make_gold_set.py`, "
+        "`python scripts/make_retrieval_fixture.py`, and `python scripts/eval_retrieval.py "
+        "--write-thresholds results/retrieval_thresholds.json`.",
+        "",
     ]
     for row in sorted(rows, key=_risk_key):
         flag = " (UNCERTAIN LABEL)" if _risk_key(row)[0] == 0 else ""
@@ -181,7 +192,7 @@ def write_review(rows: list[dict], corpus: list[dict], path: Path) -> None:
                     lines.append(f"  - note: {ev['note']}")
                 for c in hits[:MAX_EXCERPTS_PER_LABEL]:
                     lines.append(
-                        f"  - `{c['chunk_id']}`: \"{excerpt(c['text'], ev['must_contain'][0])}\""
+                        f'  - `{c["chunk_id"]}`: "{excerpt(c["text"], ev["must_contain"][0])}"'
                     )
         else:
             lines.append("- **Gold answer:** (unanswerable - model should refuse)")

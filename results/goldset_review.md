@@ -4,6 +4,8 @@
 
 Reviewer checklist: the number or claim in the gold answer appears in the excerpt for the right period/column; computed items' arithmetic in Notes is right; trap notes show the filing really cannot answer. Mark OK / FIX in the box.
 
+To promote: set `"status": "approved"` on each OK row in `results/gold_set_draft.jsonl` (fix or delete FIX rows), then run `python scripts/check_gold_draft.py`, `python scripts/make_gold_set.py`, `python scripts/make_retrieval_fixture.py`, and `python scripts/eval_retrieval.py --write-thresholds results/retrieval_thresholds.json`.
+
 ## fg-105 - business - hard (UNCERTAIN LABEL)
 
 - [ ] **Q:** What major gain and charge related to bottling and investee transactions did Coca-Cola record in other income (loss) in 2025?

@@ -37,3 +37,23 @@ def test_every_draft_label_matches_the_corpus():
         if not hits
     ]
     assert not missing, missing
+
+
+def test_only_approved_drafts_are_promoted(tmp_path):
+    import make_gold_set as mgs
+
+    rows = cgd.load_draft()[:3]
+    rows[0]["status"] = "approved"
+    path = tmp_path / "draft.jsonl"
+    path.write_text("".join(__import__("json").dumps(r) + "\n" for r in rows))
+
+    promoted = mgs.approved_draft_items(path)
+    assert [i.id for i in promoted] == [rows[0]["id"]]
+    assert not hasattr(promoted[0], "status")
+
+
+def test_promoted_ids_do_not_count_as_collisions():
+    rows = cgd.load_draft()[:2]
+    rows[0]["status"] = "approved"
+    problems = cgd.schema_problems(rows, {rows[0]["id"], rows[1]["id"]})
+    assert problems == [f"{rows[1]['id']}: collides with an id in gold_set.jsonl"]
