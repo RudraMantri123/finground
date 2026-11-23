@@ -1,0 +1,2 @@
+citation_validity,citation_coverage,numeric_grounding,refusal_recall,answer_recall,faithfulness,hallucination_rate,citation_accuracy,correctness,invalid_citations,uncited_claims,ungrounded_numbers,trap_answers,false_refusals,judge_errors,n_items,n_answered,n_claim_units,n_figures
+1.0,0.874,1.0,1.0,1.0,1.0,0.0,0.9589,0.5333,0,16,0,0,0,0,20,15,127,4
