@@ -337,6 +337,12 @@ docker compose -f deploy/langfuse/docker-compose.yml stop      # stop (keeps dat
 docker compose -f deploy/langfuse/docker-compose.yml down -v   # remove containers + data
 ```
 
+![Langfuse trace list: 14 FinGround queries, answered, refused and failed](docs/img/langfuse-traces.png)
+
+![One trace: retrieval stages with latencies, the evidence gate, and the generation with cost and tokens](docs/img/langfuse-trace-detail.png)
+
+*Self-hosted Langfuse on a laptop: 14 live API queries (Cohere Command R7B) - answered, refused by the model, refused by the evidence gate, and forced errors. Right: one answered query, 5.1 s end to end, of which retrieval 0.35 s and generation 4.76 s ($0.000237).*
+
 Each request becomes one Langfuse trace whose id **is** the `X-Trace-Id` header, so
 a bad answer reported by a user opens directly in Langfuse. Observations are nested
 and carry their real start / end times:
