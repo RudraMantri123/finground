@@ -1,0 +1,27 @@
+{
+  "pinned_run": "results/faithfulness/pinned_run.jsonl",
+  "pinned_run_sha256": "249300fb08a83db90d0240e7d6d00a588fdf06a8f5c221786c03e50d052bbe10",
+  "margin": 0.07,
+  "accepted_regression": null,
+  "note": "Rate floors/ceilings = measured value -/+ margin, rounded outward to 2 dp (margin = one question's worth on the 15 answerable items), and they are what a regenerated run is held to. max_violations are exact counts on the fixed pinned set: the deterministic checks re-run on identical text, so any new uncited claim, ungrounded figure, invalid citation, answered trap or false refusal is a regression. Recalibrate only together with a new pinned run (--regenerate --pin) and say why in the PR.",
+  "floors": {
+    "citation_validity": 0.93,
+    "citation_coverage": 0.8,
+    "numeric_grounding": 0.93,
+    "refusal_recall": 0.93,
+    "answer_recall": 0.93,
+    "faithfulness": 0.93,
+    "citation_accuracy": 0.88
+  },
+  "ceilings": {
+    "hallucination_rate": 0.07
+  },
+  "max_violations": {
+    "invalid_citations": 0,
+    "uncited_claims": 16,
+    "ungrounded_numbers": 0,
+    "trap_answers": 0,
+    "false_refusals": 0,
+    "judge_errors": 0
+  }
+}

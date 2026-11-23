@@ -21,6 +21,8 @@ import re
 import string
 from dataclasses import dataclass
 
+from ..citations import extract_cited_labels
+
 # ---------------------------------------------------------------------------
 # 1. Answer correctness (automatic lexical proxy)
 # ---------------------------------------------------------------------------
@@ -258,8 +260,6 @@ def response_citation_coverage(answer_text: str, valid_labels: set[str] | list[s
     shown to the model (e.g. ``[C9]`` with 8 retrieved) fails the response.
     Uses the answerer's own citation parser so both agree on what a citation is.
     """
-    from ..answer import extract_cited_labels  # lazy: answer pulls in FAISS
-
     valid = set(valid_labels)
     units = claim_units(answer_text)
     if not units:

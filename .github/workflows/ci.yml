@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   test:
@@ -65,4 +66,97 @@ jobs:
         with:
           name: retrieval-eval
           path: ${{ runner.temp }}/retrieval-eval/
+          if-no-files-found: ignore
+
+  # Faithfulness regression gate (docs/faithfulness_gate.md). No LLM, no torch:
+  # deterministic checks (citation validity/coverage, numeric grounding, trap
+  # refusals, abstentions) on the committed pinned answer set, thresholds on its
+  # committed judge labels, and a staleness check that fails when prompts (ids or
+  # file contents), gate models, retrieval config, fixture or gold set changed
+  # without re-running and committing the judged eval.
+  faithfulness-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install (package only; the check path imports no ML stack)
+        run: |
+          pip install --no-deps -e .
+          pip install python-dotenv
+      - name: Faithfulness gate
+        run: >
+          python scripts/eval_faithfulness.py
+          --check results/faithfulness_thresholds.json
+          --out-dir "${{ runner.temp }}/faithfulness"
+      - name: Upload per-item findings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: faithfulness-gate
+          path: ${{ runner.temp }}/faithfulness/
+          if-no-files-found: ignore
+
+  # Optional live layer: re-answer + re-judge the 20 gold questions over the
+  # fixture corpus with the gate's model pair, held to the rate floors. Runs only
+  # where secrets exist (not on PRs) and skips cleanly without COHERE_API_KEY.
+  # Costs ~35 hosted calls per run (nothing is cached in CI).
+  faithfulness-live:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      TOKENIZERS_PARALLELISM: "false"
+    steps:
+      - name: Check for COHERE_API_KEY secret
+        id: key
+        run: |
+          if [ -n "$COHERE_API_KEY" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=faithfulness-live skipped::No COHERE_API_KEY secret; live regenerate + judge not run."
+          fi
+      - uses: actions/checkout@v4
+        if: steps.key.outputs.present == 'true'
+      - uses: actions/setup-python@v5
+        if: steps.key.outputs.present == 'true'
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install (CPU-only torch)
+        if: steps.key.outputs.present == 'true'
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e .
+      - name: Cache Hugging Face models
+        if: steps.key.outputs.present == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ runner.os }}-bge-base-en-v1.5-ms-marco-MiniLM-L-6-v2-v1
+      - name: Fetch models (no-op when cached)
+        if: steps.key.outputs.present == 'true'
+        run: >
+          python -c "from sentence_transformers import SentenceTransformer, CrossEncoder;
+          SentenceTransformer('BAAI/bge-base-en-v1.5');
+          CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')"
+      - name: Regenerate + judge, check rate thresholds
+        if: steps.key.outputs.present == 'true'
+        env:
+          HF_HUB_OFFLINE: "1"
+        run: >
+          python scripts/eval_faithfulness.py --regenerate
+          --check results/faithfulness_thresholds.json
+          --out-dir "${{ runner.temp }}/faithfulness-live"
+      - name: Upload regenerated run
+        if: always() && steps.key.outputs.present == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: faithfulness-live
+          path: ${{ runner.temp }}/faithfulness-live/
           if-no-files-found: ignore

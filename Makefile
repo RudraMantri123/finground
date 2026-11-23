@@ -42,6 +42,10 @@ benchmark:  ## Evaluate models -> results/results.csv
 eval-retrieval:  ## Retrieval ablation on the committed fixture + threshold check (no LLM)
 	HF_HUB_OFFLINE=1 $(BIN)/python scripts/eval_retrieval.py --check results/retrieval_thresholds.json
 
+.PHONY: eval-faithfulness
+eval-faithfulness:  ## Faithfulness gate on the pinned judged answer set (no LLM)
+	$(BIN)/python scripts/eval_faithfulness.py --check results/faithfulness_thresholds.json
+
 .PHONY: charts
 charts:  ## Render comparison charts from results/results.csv
 	$(BIN)/python scripts/make_charts.py

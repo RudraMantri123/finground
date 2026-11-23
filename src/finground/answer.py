@@ -13,42 +13,16 @@ import re
 from dataclasses import asdict, dataclass, field
 
 from . import tracing
+from .citations import REFUSAL, extract_cited_labels, is_refusal
 from .config import CONFIG
 from .llm import LLMClient, LLMResponse
 from .prompts import answer_prompt
 from .retrieve import RetrievedChunk, best_dense_sim, retrieve
 
-REFUSAL = "Not answerable from the provided filings."
-
 # The prompt text lives in prompts/answer.<version>.toml (see prompts.py).
 # Kept as a module attribute for callers that import it; it reflects the
 # version active at import time.
 SYSTEM_PROMPT = answer_prompt().system.format(refusal=REFUSAL)
-
-_CITATION_RE = re.compile(r"\[([^\]]*?C\d+[^\]]*?)\]")
-_LABEL_RE = re.compile(r"C(\d+)")
-
-# Semantic-abstention markers. Models (especially small local ones) often
-# refuse in their own words instead of echoing the exact REFUSAL sentence;
-# an answer *opening* with one of these is an abstention in substance and must
-# be scored as one. Checked only against the start of the answer so that
-# ordinary answers which merely *mention* missing info later are not caught.
-_REFUSAL_PATTERNS = (
-    "not answerable from the provided filings",
-    "not applicable",
-    "cannot be answered",
-    "cannot answer",
-    "can't answer",
-    "unable to answer",
-    "do not contain enough information",
-    "does not contain enough information",
-    "do not contain information",
-    "does not contain information",
-    "not possible to answer",
-    "no information in the provided excerpts",
-    "the provided excerpts do not",
-    "the excerpts do not",
-)
 
 
 @dataclass
@@ -80,23 +54,6 @@ def _format_excerpts(chunks: list[RetrievedChunk]) -> str:
     return "\n\n".join(blocks)
 
 
-def extract_cited_labels(answer_text: str) -> list[str]:
-    """Return the ordered, de-duplicated ``C#`` labels cited in the answer."""
-    labels: list[str] = []
-    for group in _CITATION_RE.findall(answer_text):
-        for num in _LABEL_RE.findall(group):
-            label = f"C{num}"
-            if label not in labels:
-                labels.append(label)
-    return labels
-
-
-def is_refusal(answer_text: str) -> bool:
-    """True if the answer is an abstention — canonical or in the model's own words."""
-    head = answer_text.strip().lower()[:160]
-    return any(p in head for p in _REFUSAL_PATTERNS)
-
-
 def answer_question(
     question: str,
     *,
@@ -104,10 +61,18 @@ def answer_question(
     top_k: int | None = None,
     temperature: float = 0.0,
     use_cache: bool = True,
+    indexes=None,
 ) -> Answer:
-    """Retrieve, then produce a cited answer or an evidence-gated refusal."""
+    """Retrieve, then produce a cited answer or an evidence-gated refusal.
+
+    ``indexes`` swaps in an alternative corpus (e.g. the committed CI fixture
+    built with ``retrieve.indexes_from_chunks``); default is the local index.
+    """
     model = model or CONFIG.models.answer
-    retrieved = retrieve(question, top_k=top_k)
+    if indexes is None:
+        retrieved = retrieve(question, top_k=top_k)
+    else:
+        retrieved = retrieve(question, top_k=top_k, indexes=indexes)
     retrieved_json = [
         {
             "label": r.label,

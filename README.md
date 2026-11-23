@@ -210,6 +210,18 @@ every push against a committed fixture corpus and fails if any metric drops belo
 leaderboard above measures *generation on the full corpus*. Details and current
 numbers: [docs/retrieval_eval.md](docs/retrieval_eval.md).
 
+**Faithfulness gate (CI).** `scripts/eval_faithfulness.py` checks a committed,
+judged answer set (`results/faithfulness/`, generated over the same fixture
+corpus) on every push, with no LLM: every `[C#]` must name a retrieved chunk,
+claims must carry citations, every figure must appear in a cited chunk (after
+normalising `$`, commas, million/billion, `%`, parenthesised negatives), trap
+questions must be refused and answerable ones answered. It also gates the
+committed judge scores (faithfulness, hallucination, citation accuracy) and fails
+as **stale** when a prompt (id or file contents), the gate's models, the retrieval
+config, the fixture or the gold set changes without re-running and committing the
+judged eval. With a `COHERE_API_KEY` secret, a live job re-generates and re-judges
+on `main`. Details: [docs/faithfulness_gate.md](docs/faithfulness_gate.md).
+
 ---
 
 ## Reproducibility
@@ -235,6 +247,7 @@ make charts                             # -> results/charts/*.png
 make validate-judge                     # judge vs human labels (Cohen's kappa)
 python scripts/update_readme.py         # wire this README's tables from results/
 
+make eval-faithfulness          # faithfulness gate on the pinned answer set (no LLM)
 make test                       # unit tests (chunking, retrieval, metrics, answering)
 make lint                       # ruff + black + mypy
 ```

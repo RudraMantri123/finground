@@ -1,0 +1,33 @@
+{
+  "answer_model": "cohere:command-a-03-2025",
+  "judge_model": "cohere:command-a-03-2025",
+  "temperature": 0.0,
+  "answer_prompt": {
+    "id": "answer.v1",
+    "sha256": "fedb855613f96b44dba91da30b86aae2149c84c1f051591be1df6ca0e68dcaa5"
+  },
+  "judge_prompt": {
+    "id": "judge.v1",
+    "sha256": "3d3906e6d5529e501dbfe2140edc5046e3fab66b7e4a524b92c09f4a34545dbb"
+  },
+  "refusal": "Not answerable from the provided filings.",
+  "retrieval": {
+    "chunk_tokens": 500,
+    "chunk_overlap_tokens": 100,
+    "top_k": 8,
+    "candidate_pool": 50,
+    "rrf_k": 60,
+    "company_filter": true,
+    "use_reranker": true,
+    "rerank_pool": 24,
+    "min_dense_sim": 0.4
+  },
+  "embed_model": "BAAI/bge-base-en-v1.5",
+  "reranker_model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+  "corpus": "fixture",
+  "fixture_sha256": "51545889198dc2c7fd01380b809a18e2fbde806097deecd7467d8ac0930ef230",
+  "gold_set_sha256": "4be19b788209e9549fd15ca1ebcc18e9e215c462f85613f4d26c11fa0c9e995a",
+  "created_at": "2026-11-23T06:32:30Z",
+  "n_items": 20,
+  "note": "Fingerprint of everything that produced pinned_run.jsonl. scripts/eval_faithfulness.py fails CI when the code no longer matches it."
+}
