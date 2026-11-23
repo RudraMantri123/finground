@@ -302,9 +302,7 @@ The dashboard shows error / refusal / citation-coverage / judge-unsupported rate
 latency p50/p95 and cost per day (per hour when all traces fall on one day), span
 latency p50/p95 over time, a model × prompt-version breakdown, the leaderboard with
 CIs, and a filterable trace list with drill-down (span waterfall, retrieved chunks,
-rerank movement, answer). To export to Langfuse as well, `pip install -e
-".[observability]"` and set `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` (and
-`LANGFUSE_BASE_URL` / `LANGFUSE_HOST` if self-hosted).
+rerank movement, answer). Traces can also be exported to Langfuse (below).
 
 Leaderboard rows written before these columns existed are filled by
 `python scripts/recompute_results.py --latency-from-cache`, which recomputes from
@@ -312,6 +310,51 @@ the committed `results/runs/*.jsonl` and recovers per-question latencies by
 replaying against the LLM cache — accepting a latency only if the cached answer
 matches the committed one byte-for-byte (the recovered means reproduce the
 committed `avg_latency_s` exactly). Anything it cannot recompute stays blank.
+
+### Observability with Langfuse
+
+The same traces can be exported to a self-hosted [Langfuse](https://langfuse.com)
+for search, filtering and per-trace drill-down. The export is optional: without
+`LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` (or without the `langfuse` package)
+the sink is never created, so tests and CI need no Langfuse.
+
+```bash
+pip install -e ".[observability]"              # langfuse SDK (tested with 5.2)
+deploy/langfuse/init-env.sh                     # random local-only secrets -> deploy/langfuse/.env (gitignored)
+docker compose -f deploy/langfuse/docker-compose.yml up -d
+# UI + API on http://localhost:3100 (127.0.0.1 only). The org, project, API keys
+# and admin login are created headlessly from deploy/langfuse/.env on first start.
+
+# point FinGround at it (values from deploy/langfuse/.env):
+cat >> .env <<'ENV'
+LANGFUSE_PUBLIC_KEY=<LANGFUSE_INIT_PROJECT_PUBLIC_KEY>
+LANGFUSE_SECRET_KEY=<LANGFUSE_INIT_PROJECT_SECRET_KEY>
+LANGFUSE_BASE_URL=http://localhost:3100
+ENV
+make serve                                      # every POST /query now also lands in Langfuse
+
+docker compose -f deploy/langfuse/docker-compose.yml stop      # stop (keeps data)
+docker compose -f deploy/langfuse/docker-compose.yml down -v   # remove containers + data
+```
+
+Each request becomes one Langfuse trace whose id **is** the `X-Trace-Id` header, so
+a bad answer reported by a user opens directly in Langfuse. Observations are nested
+and carry their real start / end times:
+
+| Observation | Type | What it carries |
+|---|---|---|
+| `finground.query` | span | question, model, answer, refused, citations; ERROR level + message on failure |
+| `retrieve` | retriever | query in; retrieved chunks with dense / BM25 / RRF scores out |
+| `retrieve.bm25` / `.dense` / `.fusion` / `.company_filter` | retriever | per-stage latency, pool sizes |
+| `retrieve.rerank` | retriever | rank movement per chunk (`rank_before` → `rank_after`, `moved`, RRF and cross-encoder scores) |
+| `evidence_gate` | guardrail | `best_dense_sim`, threshold, `pass` / `refuse` decision (WARNING when it refuses) |
+| `generate` | generation | exact system + user prompt, raw response, model, token usage, cost, temperature, `prompt_version` (as the observation version) |
+| `judge` → `judge.generate` | evaluator / generation | benchmark runs only |
+
+Traces are tagged `answered` / `refused` / `error`, `gate:evidence_below_threshold`
+when the gate fired, plus the source, model and prompt version, so the trace list
+filters by outcome. The exact prompt and raw response are exported to Langfuse
+but, unless `FINGROUND_TRACE_PROMPTS=1`, still not written to the JSONL files.
 
 ---
 

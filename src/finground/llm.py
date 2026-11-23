@@ -268,7 +268,17 @@ class LLMClient:
         try:
             text, in_tok, out_tok = self._dispatch(system, user, max_tokens)
         except Exception as exc:
-            tracing.record_span("generate", t0, model=self.model_spec, error=type(exc).__name__)
+            if tracing.active():
+                err: dict[str, Any] = {
+                    "model": self.model_spec,
+                    "error": type(exc).__name__,
+                    "error_message": str(exc)[:500],
+                    "prompt_hash": tracing.prompt_hash(system, user),
+                }
+                if tracing.capture_prompts():
+                    err["prompt_system"] = system
+                    err["prompt_user"] = user
+                tracing.record_span("generate", t0, **err)
             raise
         latency = time.perf_counter() - start
         resp = LLMResponse(
@@ -309,10 +319,12 @@ class LLMClient:
             "completion_tokens": resp.completion_tokens,
             "cost_usd": resp.cost_usd,
             "llm_latency_s": resp.latency_s,
+            "temperature": self.temperature,
         }
-        if tracing.store_prompts():
+        if tracing.capture_prompts():  # kept in JSONL only with FINGROUND_TRACE_PROMPTS=1
             attrs["prompt_system"] = system
             attrs["prompt_user"] = user
+            attrs["response_text"] = resp.text
         tracing.record_span("generate", t0, **attrs)
 
     # -- provider dispatch --------------------------------------------------

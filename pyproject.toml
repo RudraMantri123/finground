@@ -44,8 +44,9 @@ dev = [
     "mypy>=1.10.0",
 ]
 # Optional trace export to Langfuse (activated by LANGFUSE_PUBLIC_KEY/SECRET_KEY).
+# Tested against SDK 5.2 and a self-hosted Langfuse 4.83 (deploy/langfuse/).
 observability = [
-    "langfuse>=2.0.0",
+    "langfuse>=3.0.0",
 ]
 
 [project.urls]

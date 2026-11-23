@@ -368,4 +368,4 @@ def test_langfuse_sink_with_fake_sdk(monkeypatch):
     assert calls[0]["trace_context"] == {"trace_id": "f" * 32}
     gen = next(c for c in calls if c.get("name") == "generate")
     assert gen["as_type"] == "generation"
-    assert gen["usage_details"] == {"input": 3, "output": 2}
+    assert gen["usage_details"] == {"input": 3, "output": 2, "total": 5}

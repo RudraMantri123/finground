@@ -28,9 +28,11 @@ Sinks:
   (``pip install -e ".[observability]"``). Missing package or a failing server
   only disables that sink.
 
-Raw prompts are not stored by default (they embed whole filing excerpts and
-make trace files large); the prompt is identified by a SHA-256 hash instead.
-Set ``FINGROUND_TRACE_PROMPTS=1`` to keep the raw text too.
+Raw prompts are not written to JSONL by default (they embed whole filing
+excerpts and make trace files large); the prompt is identified by a SHA-256
+hash instead. Set ``FINGROUND_TRACE_PROMPTS=1`` to keep the raw text too. When
+Langfuse is configured the exact prompt and raw response are always exported
+there (that is the point of a trace UI), still without growing the JSONL.
 """
 
 from __future__ import annotations
@@ -39,6 +41,7 @@ import contextvars
 import hashlib
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -72,7 +75,19 @@ def enabled() -> bool:
 
 
 def store_prompts() -> bool:
+    """Keep raw prompt / response text in the JSONL trace files."""
     return _env_flag("FINGROUND_TRACE_PROMPTS", False)
+
+
+# Span attributes holding raw prompt / response text. Captured whenever a sink
+# wants them (JSONL with FINGROUND_TRACE_PROMPTS=1, or Langfuse), but written to
+# JSONL only when FINGROUND_TRACE_PROMPTS=1.
+RAW_TEXT_ATTRS = ("prompt_system", "prompt_user", "response_text")
+
+
+def capture_prompts() -> bool:
+    """Whether call sites should record raw prompt / response text on spans."""
+    return store_prompts() or LangfuseSink.configured()
 
 
 def trace_dir() -> Path:
@@ -372,6 +387,26 @@ def record_answer(ans: Any) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _without_raw_text(record: dict[str, Any]) -> dict[str, Any]:
+    """Copy of ``record`` with raw prompt / response text dropped from its spans."""
+    spans = record.get("spans") or []
+    if not any(k in (sp.get("attrs") or {}) for sp in spans for k in RAW_TEXT_ATTRS):
+        return record
+    out = dict(record)
+    out["spans"] = [
+        (
+            {
+                **sp,
+                "attrs": {k: v for k, v in sp["attrs"].items() if k not in RAW_TEXT_ATTRS},
+            }
+            if sp.get("attrs")
+            else sp
+        )
+        for sp in spans
+    ]
+    return out
+
+
 class JsonlSink:
     """Append-only JSONL, one file per UTC day (easy to rotate / grep / ship)."""
 
@@ -380,6 +415,8 @@ class JsonlSink:
         self._lock = threading.Lock()
 
     def write(self, record: dict[str, Any]) -> None:
+        if not store_prompts():
+            record = _without_raw_text(record)
         directory = self.directory or trace_dir()
         directory.mkdir(parents=True, exist_ok=True)
         day = str(record.get("ts", ""))[:10] or datetime.now(UTC).strftime("%Y-%m-%d")
@@ -388,18 +425,111 @@ class JsonlSink:
             fh.write(line)
 
 
+_HEX32 = re.compile(r"[0-9a-f]{32}")
+
+
+def _epoch_ns(ts: Any) -> int | None:
+    """ISO-8601 trace start (``record['ts']``) -> epoch nanoseconds."""
+    try:
+        dt = datetime.fromisoformat(str(ts))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        return int(dt.timestamp() * 1_000_000_000)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def rerank_movement(record: dict[str, Any]) -> list[dict[str, Any]]:
+    """How the cross-encoder reordered the fused candidates, one row per chunk.
+
+    ``moved`` is positive when the reranker promoted a chunk (rank 5 -> 2 is +3).
+    """
+    before = [d.get("chunk_id") for d in record.get("rerank_before") or []]
+    rrf = {d.get("chunk_id"): d.get("rrf_score") for d in record.get("rerank_before") or []}
+    out: list[dict[str, Any]] = []
+    for rank_after, d in enumerate(record.get("rerank_after") or [], start=1):
+        cid = d.get("chunk_id")
+        rank_before = before.index(cid) + 1 if cid in before else None
+        out.append(
+            {
+                "chunk_id": cid,
+                "rank_before": rank_before,
+                "rank_after": rank_after,
+                "moved": None if rank_before is None else rank_before - rank_after,
+                "rrf_score": rrf.get(cid),
+                "rerank_score": d.get("rerank_score"),
+            }
+        )
+    return out
+
+
+def _observation_type(name: str) -> str:
+    """Langfuse observation type for a FinGround span name."""
+    if name.rsplit(".", 1)[-1] == "generate":
+        return "generation"
+    if name == "retrieve" or name.startswith("retrieve."):
+        return "retriever"
+    if name == "evidence_gate":
+        return "guardrail"
+    if name == "judge":
+        return "evaluator"
+    return "span"
+
+
+def _parent_index(spans: list[dict[str, Any]]) -> list[int | None]:
+    """Nest ``a.b`` under the span named ``a`` (the one whose interval contains it).
+
+    Spans are recorded flat with dotted names (``retrieve.bm25``,
+    ``judge.generate``); this rebuilds the tree. ``None`` means "under the root".
+    """
+    parents: list[int | None] = []
+    for s in spans:
+        name = str(s.get("name", ""))
+        prefix = name.rsplit(".", 1)[0] if "." in name else None
+        candidates = [
+            j for j, p in enumerate(spans) if prefix is not None and p.get("name") == prefix
+        ]
+        start = float(s.get("start_ms") or 0.0)
+        end = start + float(s.get("duration_ms") or 0.0)
+        best = None
+        for j in candidates:
+            ps = float(spans[j].get("start_ms") or 0.0)
+            pe = ps + float(spans[j].get("duration_ms") or 0.0)
+            if ps <= start + 1e-3 and end <= pe + 1e-3:
+                best = j
+                break
+        parents.append(best if best is not None else (candidates[0] if candidates else None))
+    return parents
+
+
 class LangfuseSink:
     """Forward finished traces to Langfuse when configured; otherwise inert.
 
-    Traces are exported after the fact, so span timings travel as metadata
-    (``duration_ms`` / ``start_ms``) rather than as backdated timestamps. The
-    Langfuse trace id is derived from the FinGround trace id, so a JSONL record
-    and its Langfuse view can be cross-referenced.
+    Targets the OpenTelemetry-based Python SDK (v3 and later; tested on v5).
+    Each FinGround trace becomes one Langfuse trace with the **same id** (the
+    32-hex id returned in ``X-Trace-Id``), a root observation for the request
+    and one nested observation per recorded span:
+
+    * ``retrieve`` (retriever) — query in, retrieved chunks with scores out;
+      ``retrieve.bm25`` / ``.dense`` / ``.fusion`` / ``.company_filter`` /
+      ``.rerank`` nested under it, the rerank output being the rank movement;
+    * ``evidence_gate`` (guardrail) — the pass / refuse decision, WARNING level
+      when it refuses;
+    * ``generate`` (generation) — exact system + user prompt in, raw model
+      response out, model, token usage, cost and ``prompt_version``;
+    * ``judge`` (evaluator) with ``judge.generate`` nested, in benchmarks.
+
+    Spans are exported after the request finishes, so they are backdated to
+    their real start / end times. That uses the SDK's OpenTelemetry tracer
+    (``Langfuse._otel_tracer``), which is not public API; if a future SDK drops
+    it the sink falls back to the public ``start_observation`` and timings stay
+    available as ``start_ms`` / ``duration_ms`` metadata on every observation.
     """
 
-    def __init__(self) -> None:
-        self._client: Any = None
+    def __init__(self, client: Any = None) -> None:
+        self._client: Any = client
         self._failed = False
+        self._backdate = True
 
     @staticmethod
     def configured() -> bool:
@@ -415,6 +545,11 @@ class LangfuseSink:
                 self._failed = True
         return self._client
 
+    def flush(self) -> None:
+        client = self._client
+        if client is not None and hasattr(client, "flush"):
+            client.flush()
+
     def write(self, record: dict[str, Any]) -> None:
         client = self._get_client()
         if client is None:
@@ -424,42 +559,220 @@ class LangfuseSink:
         elif hasattr(client, "trace"):  # SDK v2
             self._write_v2(client, record)
 
+    # -- record -> observation fields -----------------------------------------
+
     @staticmethod
     def _summary(record: dict[str, Any]) -> dict[str, Any]:
-        skip = {"spans", "answer", "question", "retrieved", "prompt_system", "prompt_user"}
+        skip = {
+            "spans",
+            "answer",
+            "question",
+            "retrieved",
+            "rerank_before",
+            "rerank_after",
+            "prompt_system",
+            "prompt_user",
+        }
         return {k: v for k, v in record.items() if k not in skip}
 
-    def _write_otel(self, client: Any, record: dict[str, Any]) -> None:
-        trace_context = None
-        create_id = getattr(client, "create_trace_id", None)
-        if callable(create_id):
-            trace_context = {"trace_id": create_id(seed=record["trace_id"])}
-        root = client.start_observation(
-            trace_context=trace_context,
-            name=f"finground.{record.get('name', 'trace')}",
-            input={"question": record.get("question")},
-            output={"answer": record.get("answer"), "error": record.get("error")},
-            metadata=self._summary(record),
-            level="ERROR" if record.get("error") else None,
-        )
-        for s in record.get("spans", []):
-            is_gen = s["name"].endswith("generate")
-            attrs = s.get("attrs", {})
-            kwargs: dict[str, Any] = {
-                "name": s["name"],
-                "as_type": "generation" if is_gen else "span",
-                "metadata": {"start_ms": s["start_ms"], "duration_ms": s["duration_ms"], **attrs},
+    @staticmethod
+    def _tags(record: dict[str, Any]) -> list[str]:
+        if record.get("error"):
+            outcome = "error"
+        elif record.get("refused"):
+            outcome = "refused"
+        else:
+            outcome = "answered"
+        tags = [outcome]
+        if record.get("gate"):
+            tags.append(f"gate:{record['gate']}")
+        for key in ("source", "model", "prompt_version"):
+            if record.get(key):
+                tags.append(str(record[key]))
+        return tags
+
+    def _root_fields(self, record: dict[str, Any]) -> dict[str, Any]:
+        err = record.get("error")
+        fields: dict[str, Any] = {
+            "name": f"finground.{record.get('name', 'trace')}",
+            "as_type": "span",
+            "input": {"question": record.get("question"), "model": record.get("model")},
+            "output": {
+                "answer": record.get("answer"),
+                "refused": record.get("refused"),
+                "gate": record.get("gate"),
+                "citations": record.get("citations"),
+                "error": err,
+            },
+            "metadata": self._summary(record),
+        }
+        if record.get("prompt_version"):
+            fields["version"] = str(record["prompt_version"])
+        if err:
+            fields["level"] = "ERROR"
+            fields["status_message"] = f"{err.get('type')}: {err.get('message')}"
+        return fields
+
+    def _span_fields(self, s: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
+        name = str(s.get("name", "span"))
+        attrs = dict(s.get("attrs") or {})
+        prompt_system = attrs.pop("prompt_system", None)
+        prompt_user = attrs.pop("prompt_user", None)
+        response_text = attrs.pop("response_text", None)
+        as_type = _observation_type(name)
+        fields: dict[str, Any] = {
+            "name": name,
+            "as_type": as_type,
+            "metadata": {
+                "start_ms": s.get("start_ms"),
+                "duration_ms": s.get("duration_ms"),
+                **attrs,
+            },
+        }
+        if name == "retrieve":
+            fields["input"] = {"query": record.get("question"), "top_k": attrs.get("top_k")}
+            fields["output"] = record.get("retrieved")
+        elif name == "retrieve.rerank":
+            fields["input"] = {"pool": attrs.get("pool")}
+            fields["output"] = rerank_movement(record)
+        elif name == "evidence_gate":
+            passed = bool(attrs.get("passed"))
+            fields["input"] = {
+                "best_dense_sim": attrs.get("best_dense_sim"),
+                "threshold": attrs.get("threshold"),
             }
-            if is_gen:
-                kwargs["model"] = attrs.get("model")
-                kwargs["usage_details"] = {
-                    "input": int(attrs.get("prompt_tokens") or 0),
-                    "output": int(attrs.get("completion_tokens") or 0),
-                }
-                if attrs.get("cost_usd") is not None:
-                    kwargs["cost_details"] = {"total": float(attrs["cost_usd"])}
-            root.start_observation(**kwargs).end()
-        root.end()
+            fields["output"] = {"decision": "pass" if passed else "refuse", "passed": passed}
+            if not passed:
+                fields["level"] = "WARNING"
+                fields["status_message"] = "evidence below threshold: refused without LLM call"
+        elif as_type == "generation":
+            if prompt_system is not None or prompt_user is not None:
+                fields["input"] = [
+                    {"role": "system", "content": prompt_system},
+                    {"role": "user", "content": prompt_user},
+                ]
+            else:
+                fields["input"] = {"prompt_hash": attrs.get("prompt_hash")}
+            if response_text is not None:
+                fields["output"] = response_text
+            elif name == "generate" and not attrs.get("error"):
+                fields["output"] = record.get("answer")
+            fields["model"] = attrs.get("model")
+            in_tok = int(attrs.get("prompt_tokens") or 0)
+            out_tok = int(attrs.get("completion_tokens") or 0)
+            fields["usage_details"] = {
+                "input": in_tok,
+                "output": out_tok,
+                "total": in_tok + out_tok,
+            }
+            if attrs.get("cost_usd") is not None:
+                fields["cost_details"] = {"total": float(attrs["cost_usd"])}
+            if attrs.get("temperature") is not None:
+                fields["model_parameters"] = {"temperature": attrs["temperature"]}
+            if name == "generate" and record.get("prompt_version"):
+                fields["version"] = str(record["prompt_version"])
+        if attrs.get("error"):
+            fields["level"] = "ERROR"
+            detail = attrs.get("error_message")
+            fields["status_message"] = (
+                f"{attrs['error']}: {detail}" if detail else str(attrs["error"])
+            )
+        return fields
+
+    # -- export ----------------------------------------------------------------
+
+    def _trace_id(self, client: Any, record: dict[str, Any]) -> str | None:
+        tid = str(record.get("trace_id") or "")
+        if _HEX32.fullmatch(tid):
+            return tid  # keep X-Trace-Id == Langfuse trace id
+        create_id = getattr(client, "create_trace_id", None)
+        return create_id(seed=tid) if callable(create_id) else None
+
+    def _open(
+        self, client: Any, parent: Any, trace_id: str | None, start_ns: int | None, f: dict
+    ) -> tuple[Any, bool]:
+        """Start an observation; returns ``(observation, backdated)``."""
+        if self._backdate and start_ns is not None and trace_id is not None:
+            try:
+                return self._open_backdated(client, parent, trace_id, start_ns, f), True
+            except Exception:  # noqa: BLE001 — SDK internals moved: use the public API
+                self._backdate = False
+        if parent is None:
+            ctx = {"trace_id": trace_id} if trace_id else None
+            return client.start_observation(trace_context=ctx, **f), False
+        return parent.start_observation(**f), False
+
+    @staticmethod
+    def _open_backdated(
+        client: Any, parent: Any, trace_id: str, start_ns: int, fields: dict
+    ) -> Any:
+        from opentelemetry import context as otel_context
+        from opentelemetry import trace as otel_trace
+
+        tracer = client._otel_tracer
+        if parent is None:
+            remote = client._create_remote_parent_span(trace_id=trace_id, parent_span_id=None)
+            ctx = otel_trace.set_span_in_context(remote, otel_context.get_current())
+        else:
+            ctx = otel_trace.set_span_in_context(parent._otel_span, otel_context.get_current())
+        otel_span = tracer.start_span(name=fields["name"], context=ctx, start_time=start_ns)
+        if parent is None:
+            otel_span.set_attribute("langfuse.internal.as_root", True)
+        kwargs = {k: v for k, v in fields.items() if k != "name"}
+        return client._create_observation_from_otel_span(otel_span=otel_span, **kwargs)
+
+    def _write_otel(self, client: Any, record: dict[str, Any]) -> None:
+        propagate_attributes: Any = None
+        try:
+            from langfuse import propagate_attributes
+        except Exception:  # noqa: BLE001 — older SDKs: trace attributes are optional
+            pass
+        if propagate_attributes is None:
+            self._export_otel(client, record)
+            return
+        meta = {
+            k: str(record[k])[:200]
+            for k in ("trace_id", "source", "model", "prompt_version", "gate")
+            if record.get(k)
+        }
+        with propagate_attributes(
+            trace_name=f"finground.{record.get('name', 'trace')}",
+            tags=self._tags(record),
+            metadata=meta,
+        ):
+            self._export_otel(client, record)
+
+    def _export_otel(self, client: Any, record: dict[str, Any]) -> None:
+        trace_id = self._trace_id(client, record)
+        base_ns = _epoch_ns(record.get("ts"))
+        spans = list(record.get("spans") or [])
+
+        def ns(ms: Any) -> int | None:
+            return None if base_ns is None else base_ns + int(float(ms or 0.0) * 1_000_000)
+
+        root, root_backdated = self._open(
+            client, None, trace_id, base_ns, self._root_fields(record)
+        )
+        opened: list[tuple[Any, bool, int | None]] = []
+        parents = _parent_index(spans)
+        # Parents before children: a dotted child is recorded before its parent.
+        order = sorted(range(len(spans)), key=lambda i: (str(spans[i].get("name")).count("."), i))
+        by_index: dict[int, Any] = {}
+        for i in order:
+            s = spans[i]
+            p = parents[i]
+            parent_obs = by_index.get(p, root) if p is not None else root
+            start = ns(s.get("start_ms"))
+            obs, backdated = self._open(
+                client, parent_obs, trace_id, start, self._span_fields(s, record)
+            )
+            by_index[i] = obs
+            end = None if start is None else start + int(float(s.get("duration_ms") or 0) * 1e6)
+            opened.append((obs, backdated, end))
+        for obs, backdated, end in reversed(opened):
+            obs.end(end_time=end) if backdated else obs.end()
+        root_end = ns(record.get("duration_ms"))
+        root.end(end_time=root_end) if root_backdated else root.end()
 
     def _write_v2(self, client: Any, record: dict[str, Any]) -> None:
         tr = client.trace(
@@ -509,6 +822,20 @@ def set_sinks(sinks: list[Any] | None) -> None:
     """
     global _SINKS
     _SINKS = sinks
+
+
+def flush() -> None:
+    """Block until sinks with background export (Langfuse) have sent everything.
+
+    Long-running servers never need this; short scripts can call it before exit
+    (the Langfuse SDK also flushes on interpreter shutdown).
+    """
+    for sink in _SINKS or []:
+        try:
+            if hasattr(sink, "flush"):
+                sink.flush()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 _warned = False
